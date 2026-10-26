@@ -1246,7 +1246,8 @@ impl Fragment {
             );
         }
 
-        Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
+        let selection_rect =
+            Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
 
         for text_decoration in state.text_decorations.iter() {
             for bit in [
@@ -1291,14 +1292,36 @@ impl Fragment {
             }
         }
 
-        builder.webrender_display_list_builder.push_text(
-            &common,
-            glyph_bounds,
-            &builder.glyph_buffer,
-            fragment.font_key,
-            rgba(color),
-            None,
-        );
+        let mut paint_text = |clip_rect: LayoutRect, text_color| {
+            if let Some(clip_rect) = common.clip_rect.intersection(&clip_rect) {
+                let mut clipped_common = common;
+                clipped_common.clip_rect = clip_rect;
+                builder.webrender_display_list_builder.push_text(
+                    &clipped_common,
+                    glyph_bounds,
+                    &builder.glyph_buffer,
+                    fragment.font_key,
+                    text_color,
+                    None,
+                );
+            }
+        };
+        if let Some(selection_rect) = selection_rect {
+            let start = selection_rect.min.x.clamp(glyph_bounds.min.x, glyph_bounds.max.x);
+            let end = selection_rect.max.x.clamp(start, glyph_bounds.max.x);
+            let mut before = glyph_bounds;
+            before.max.x = start;
+            paint_text(before, rgba(color));
+            let mut selected = glyph_bounds;
+            selected.min.x = start;
+            selected.max.x = end;
+            paint_text(selected, rgba(fragment.selected_style().slow_clone_color()));
+            let mut after = glyph_bounds;
+            after.min.x = end;
+            paint_text(after, rgba(color));
+        } else {
+            paint_text(glyph_bounds, rgba(color));
+        }
 
         if builder
             .paint_timing_handler
@@ -1476,10 +1499,10 @@ impl Fragment {
         builder: &mut DisplayListBuilder<'_>,
         state: &TraversalState,
         line_box_rect: &PhysicalRect<Au>,
-    ) {
+    ) -> Option<LayoutRect> {
         let run_data = &fragment.run_data;
         let Some(selection) = *run_data.selection.borrow() else {
-            return;
+            return None;
         };
 
         // The selection character range is in pre-transformed character offsets, so use the
@@ -1490,7 +1513,7 @@ impl Fragment {
         if fragment.character_range_in_dom_node.start > selection_character_range.end ||
             fragment.character_range_in_dom_node.end < selection_character_range.start
         {
-            return;
+            return None;
         }
 
         // When there is an active selection, the line is empty, and there is a forced linebreak,
@@ -1502,7 +1525,7 @@ impl Fragment {
                 .character_range_in_dom_node
                 .contains(&selection_character_range.start)
         {
-            return;
+            return None;
         }
 
         let mut current_character_index = fragment.character_range_in_dom_node.start;
@@ -1573,17 +1596,17 @@ impl Fragment {
                 .wr()
                 .push_rect(&selection_common, selection_rect, rgba(*selection_color));
 
-            return;
+            return Some(selection_rect);
         }
 
         if !fragment.run_data.paints_caret {
-            return;
+            return None;
         }
 
         // Never paint a caret when the WebView does not have system focus. This matches
         // the behavior of other browsers.
         if !builder.frame_focused {
-            return;
+            return None;
         }
 
         let insertion_point_rect = Rect::new(
@@ -1621,6 +1644,7 @@ impl Fragment {
             insertion_point_rect,
             property_binding,
         );
+        None
     }
 }
 
