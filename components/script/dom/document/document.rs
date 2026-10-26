@@ -1360,7 +1360,7 @@ impl Document {
     pub(crate) fn set_quirks_mode(&self, new_mode: QuirksMode) {
         let old_mode = self.quirks_mode.replace(new_mode);
 
-        if old_mode != new_mode {
+        if old_mode != new_mode && self.has_browsing_context {
             self.window.layout_mut().set_quirks_mode(new_mode);
         }
     }

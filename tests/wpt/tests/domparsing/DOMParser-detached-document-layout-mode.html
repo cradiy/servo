@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Detached parsing preserves the associated window's layout mode</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-domparser-parsefromstring">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+for (const standards of [true, false]) {
+  promise_test(async t => {
+    const frame = document.createElement('iframe');
+    t.add_cleanup(() => frame.remove());
+    frame.style.height = '240px';
+    const loaded = new Promise(resolve => frame.onload = resolve);
+    const html = (standards ? '<!doctype html>' : '') +
+      '<style>body{margin:0}#box{height:100%}#content{height:36px}</style>' +
+      '<div><div id="box"><div id="content"></div></div></div>';
+    const url = URL.createObjectURL(new Blob([html], {type: 'text/html'}));
+    t.add_cleanup(() => URL.revokeObjectURL(url));
+    frame.src = url;
+    document.body.append(frame);
+    await loaded;
+
+    const win = frame.contentWindow;
+    const doc = win.document;
+    const box = doc.getElementById('box');
+    const before = box.getBoundingClientRect().height;
+    assert_equals(doc.compatMode, standards ? 'CSS1Compat' : 'BackCompat');
+    assert_equals(before, standards ? 36 : 240);
+
+    const detached = new win.DOMParser().parseFromString(
+      (standards ? '' : '<!doctype html>') + '<p>Inert document</p>', 'text/html');
+    assert_equals(detached.compatMode, standards ? 'BackCompat' : 'CSS1Compat');
+    doc.body.style.paddingLeft = '2px';
+    assert_equals(box.getBoundingClientRect().height, before,
+      'Reflow must preserve the original percentage-height behavior');
+    assert_equals(doc.compatMode, standards ? 'CSS1Compat' : 'BackCompat');
+  }, `Parsing a detached document must not change ${standards ? 'standards' : 'quirks'} layout`);
+}
+</script>

@@ -17,6 +17,8 @@ use super::clipboarditem::Representation;
 use crate::dom::bindings::codegen::Bindings::ClipboardBinding::{
     ClipboardMethods, PresentationStyle,
 };
+use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
+use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::error::Error;
 use crate::dom::bindings::refcounted::TrustedPromise;
 use crate::dom::bindings::reflector::DomGlobal;
@@ -133,12 +135,12 @@ impl ClipboardMethods<crate::DomTypeHolder> for Clipboard {
 
         // Step 3 Run the following steps in parallel:
 
-        // TODO write permission could be removed from spec
-        // Step 3.1 Let r be the result of running check clipboard write permission.
-        // Step 3.2 If r is false, then:
-        // Step 3.2.1 Queue a global task on the permission task source, given realm’s global object,
-        // to reject p with "NotAllowedError" DOMException in realm.
-        // Step 3.2.2 Abort these steps.
+        let window = global.as_window();
+        if !window.Document().HasFocus() || !window.has_transient_activation() {
+            p.reject_error(realm, Error::NotAllowed(None));
+            return p;
+        }
+        window.consume_user_activation();
 
         let trusted_promise = TrustedPromise::from(&p);
         let bytes = Vec::from(data);

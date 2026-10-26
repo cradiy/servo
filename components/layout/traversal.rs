@@ -204,6 +204,15 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
         return element_damage | damage_from_parent;
     }
 
+    if let Some(svg) = node.svg_data()
+        && let Some(color) = svg.source_color
+        && color != *node.style(&layout_context.style_context).get_color()
+    {
+        layout_context
+            .image_resolver
+            .queue_svg_element_for_serialization(node);
+    }
+
     let mut damage_set = ElementDamageSet {
         node,
         from_parent: damage_from_parent,

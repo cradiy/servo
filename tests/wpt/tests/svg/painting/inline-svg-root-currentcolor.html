@@ -1,0 +1,24 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>Inline SVG root color follows the cascade and ancestor changes</title>
+<link rel="help" href="https://www.w3.org/TR/SVG2/painting.html#ColorProperty">
+<link rel="match" href="inline-svg-root-currentcolor-ref.html">
+<style>
+  #host { color: red; }
+  #host.ready, #cascade { color: green !important; }
+  svg { display: block; }
+</style>
+<div id="host">
+  <svg width="60" height="40" viewBox="0 0 60 40"><rect width="60" height="40" fill="currentColor"/></svg>
+  <svg id="cascade" width="60" height="40" viewBox="0 0 60 40" style="color: red; fill: currentColor;"><rect width="60" height="40"/></svg>
+  <svg id="direct" width="60" height="40" viewBox="0 0 60 40" style="color: red !important;"><rect width="60" height="40" fill="currentColor"/></svg>
+</div>
+<script>
+addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(() => {
+  document.getElementById('host').classList.add('ready');
+  document.getElementById('direct').style.setProperty('color', 'green', 'important');
+  requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait'));
+})));
+</script>
+</html>

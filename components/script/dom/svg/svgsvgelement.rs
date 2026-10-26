@@ -12,10 +12,11 @@ use js::rust::HandleObject;
 use layout_api::SVGElementData;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
+use style::color::AbsoluteColor;
 use style::parser::ParserContext;
 use style::stylesheets::Origin;
 use style::values::specified::LengthPercentage;
-use style_traits::ParsingMode;
+use style_traits::{ParsingMode, ToCss};
 use uuid::Uuid;
 use xml5ever::serialize::TraversalScope;
 
@@ -44,6 +45,8 @@ pub(crate) struct SVGSVGElement {
     // on each layout and must be invalidated when the subtree changes.
     #[no_trace]
     cached_serialized_data_url: AtomicRefCell<Option<Result<ServoUrl, ()>>>,
+    #[no_trace]
+    cached_color: AtomicRefCell<Option<AbsoluteColor>>,
 }
 
 impl SVGSVGElement {
@@ -56,6 +59,7 @@ impl SVGSVGElement {
             svggraphicselement: SVGGraphicsElement::new_inherited(local_name, prefix, document),
             uuid: Uuid::new_v4(),
             cached_serialized_data_url: Default::default(),
+            cached_color: Default::default(),
         }
     }
 
@@ -76,6 +80,12 @@ impl SVGSVGElement {
     }
 
     pub(crate) fn serialize_and_cache_subtree(&self, cx: &mut js::context::JSContext) {
+        let color = self
+            .upcast::<Element>()
+            .style_without_reflow()
+            .map(|style| *style.get_color());
+        self.invalidate_cached_serialized_subtree_and_rasterization_result(cx.no_gc());
+        *self.cached_color.borrow_mut() = color;
         let document_fragment = self.owner_document().CreateDocumentFragment(cx);
         let cloned_node = Node::clone(
             cx,
@@ -95,6 +105,17 @@ impl SVGSVGElement {
         }
 
         self.process_use_elements(cx, &cloned_node);
+
+        if let Some(color) = color {
+            let element = cloned_node.downcast::<Element>().unwrap();
+            let original = element.get_string_attribute(&local_name!("style"));
+            let mut style = original.str().trim_end().trim_end_matches(';').to_owned();
+            if !style.is_empty() {
+                style.push(';');
+            }
+            style.push_str(&format!("color:{} !important", color.to_css_string()));
+            element.set_string_attribute(cx, &local_name!("style"), DOMString::from(style));
+        }
 
         let Ok(xml_source) = cloned_node.xml_serialize(TraversalScope::IncludeNode) else {
             *self.cached_serialized_data_url.borrow_mut() = Some(Err(()));
@@ -178,6 +199,7 @@ impl SVGSVGElement {
         }
 
         *self.cached_serialized_data_url.borrow_mut() = None;
+        *self.cached_color.borrow_mut() = None;
         self.upcast::<Node>().dirty(no_gc, NodeDamage::Other);
     }
 }
@@ -190,6 +212,7 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
         let height = element.get_attr_for_layout(&ns!(), &local_name!("height"));
         let view_box = element.get_attr_for_layout(&ns!(), &local_name!("viewBox"));
         SVGElementData {
+            source_color: *self.unsafe_get().cached_color.borrow(),
             source: self
                 .unsafe_get()
                 .cached_serialized_data_url
