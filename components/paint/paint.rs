@@ -754,6 +754,11 @@ impl Paint {
             .render(&self.time_profiler_chan);
     }
 
+    pub fn render_if_ready(&self, webview_id: WebViewId) -> bool {
+        self.painter_mut(webview_id.into())
+            .render_if_ready(&self.time_profiler_chan)
+    }
+
     /// Get the message receiver for this [`Paint`].
     pub fn receiver(&self) -> &RoutedReceiver<PaintMessage> {
         &self.paint_receiver

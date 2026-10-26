@@ -428,7 +428,15 @@ impl WebViewRenderer {
                     _ => None,
                 }
                 .or_else(|| self.hit_test(render_api, point).into_iter().nth(0));
-                if hit_test_result.is_none() {
+                if hit_test_result.is_none() &&
+                    !matches!(
+                        &event.event,
+                        InputEvent::MouseButton(embedder_traits::MouseButtonEvent {
+                            action: embedder_traits::MouseButtonAction::Up,
+                            ..
+                        })
+                    )
+                {
                     warn!("Empty hit test result for input event, ignoring.");
                     return false;
                 }

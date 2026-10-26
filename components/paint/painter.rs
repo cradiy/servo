@@ -405,6 +405,37 @@ impl Painter {
         }
     }
 
+    pub(crate) fn render_if_ready(&mut self, time_profiler_channel: &ProfilerChan) -> bool {
+        let Some(renderer) = self.webrender_renderer.as_mut() else {
+            return false;
+        };
+        renderer.update();
+        for view in self
+            .webview_renderers
+            .values()
+            .filter(|view| !view.hidden())
+        {
+            let Some(pipeline_id) = view.root_pipeline_id else {
+                return false;
+            };
+            let Some(first_epoch) = view
+                .pipelines
+                .get(&pipeline_id)
+                .and_then(|p| p.first_layout_epoch)
+            else {
+                return false;
+            };
+            if !renderer
+                .current_epoch(self.webrender_document, pipeline_id.into())
+                .is_some_and(|epoch| epoch >= first_epoch)
+            {
+                return false;
+            }
+        }
+        self.render(time_profiler_channel);
+        true
+    }
+
     #[servo_tracing::instrument(skip_all)]
     pub(crate) fn render(&mut self, time_profiler_channel: &ProfilerChan) {
         let refresh_driver = self.refresh_driver.clone();
@@ -1031,6 +1062,7 @@ impl Painter {
         details.viewport_scale = Some(display_list_info.viewport_details.hidpi_scale_factor);
 
         let epoch = display_list_info.epoch.into();
+        details.first_layout_epoch.get_or_insert(epoch);
         let first_reflow = display_list_info.first_reflow;
         if details.first_paint_metric == PaintMetricState::Waiting &&
             display_list_info

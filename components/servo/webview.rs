@@ -731,6 +731,14 @@ impl WebView {
         self.servo().paint().render(self.id());
     }
 
+    /// Paint only when all visible views sharing this rendering context have a
+    /// frame containing their current document's first layout. Returns whether
+    /// painting occurred. Present the rendering context only when this returns true.
+    /// An empty document is ready once its layout has reached WebRender.
+    pub fn paint_if_ready(&self) -> bool {
+        self.servo().paint().render_if_ready(self.id())
+    }
+
     /// Get the [`UserContentManager`] associated with this [`WebView`].
     pub fn user_content_manager(&self) -> Option<Rc<UserContentManager>> {
         self.inner().user_content_manager.clone()

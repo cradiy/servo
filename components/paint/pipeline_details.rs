@@ -64,6 +64,8 @@ pub(crate) struct PipelineDetails {
     /// display list has been received.
     pub display_list_epoch: Option<Epoch>,
 
+    pub first_layout_epoch: Option<WebRenderEpoch>,
+
     /// Paint-driven animations associated with this [`PipelineDetails`]. Currently only text caret
     /// is handled this way.
     ///
@@ -99,6 +101,7 @@ impl PipelineDetails {
             container_timing_candidates: VecDeque::new(),
             exited: PipelineExitSource::empty(),
             display_list_epoch: None,
+            first_layout_epoch: None,
             animations: Default::default(),
         }
     }
