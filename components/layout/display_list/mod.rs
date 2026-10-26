@@ -77,6 +77,7 @@ mod clip;
 mod conversions;
 mod gradient;
 mod hit_test;
+mod mask;
 mod paint_timing_handler;
 mod paint_traversal;
 mod painted_region;
@@ -525,7 +526,13 @@ impl DisplayListBuilder<'_> {
                     effects.backdrop_filter.0.is_empty() &&
                     effects.opacity == 1.0 &&
                     effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
-                    style.get_svg().clip_path == ComputedClipPath::None
+                    style.get_svg().clip_path == ComputedClipPath::None &&
+                    style
+                        .get_svg()
+                        .mask_image
+                        .0
+                        .iter()
+                        .all(|image| matches!(image, style::values::computed::Image::None))
                 {
                     return false;
                 }
@@ -568,6 +575,7 @@ impl DisplayListBuilder<'_> {
             clip_id => Some(self.clip_chain_id(clip_id)),
         };
         let spatial_id = self.spatial_id(stacking_context.scroll_tree_node_id);
+        let clip_chain_id = self.image_mask_clip(stacking_context, spatial_id, clip_chain_id);
 
         self.wr().push_stacking_context(
             spatial_id,
@@ -1307,7 +1315,10 @@ impl Fragment {
             }
         };
         if let Some(selection_rect) = selection_rect {
-            let start = selection_rect.min.x.clamp(glyph_bounds.min.x, glyph_bounds.max.x);
+            let start = selection_rect
+                .min
+                .x
+                .clamp(glyph_bounds.min.x, glyph_bounds.max.x);
             let end = selection_rect.max.x.clamp(start, glyph_bounds.max.x);
             let mut before = glyph_bounds;
             before.max.x = start;

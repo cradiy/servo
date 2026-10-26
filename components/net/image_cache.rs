@@ -17,8 +17,9 @@ use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
 use net_traits::image_cache::{
     FontResolver, Image, ImageCache, ImageCacheFactory, ImageCacheResponseCallback,
-    ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
-    ImageResponse, PendingImageId, RasterizationCompleteResponse, VectorImage,
+    ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener, ImageMaskMode, ImageMaskTiling,
+    ImageOrMetadataAvailable, ImageResponse, PendingImageId, RasterizationCompleteResponse,
+    VectorImage,
 };
 use net_traits::request::CorsSettings;
 use net_traits::{FetchResponseMsg, Metadata, NetworkError};
@@ -39,6 +40,12 @@ use webrender_api::ImageKey as WebRenderImageKey;
 use webrender_api::units::DeviceIntSize;
 
 use crate::image_cache::KeyCacheState::PipelineClosed;
+
+#[path = "image_mask.rs"]
+mod image_mask;
+
+const MAX_MASK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MASK_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 thread_local! {
     pub static SUPPRESS_ABORT_IN_PANIC_HOOK: Cell<bool> = const { Cell::new(false) };
@@ -509,6 +516,17 @@ struct ImageCacheStore {
     /// contains the rasterized image.
     rasterized_vector_images: FxHashMap<(PendingImageId, DeviceIntSize), RasterizationTask>,
 
+    /// Mask textures keyed by their source image resource and interpretation.
+    image_masks: FxHashMap<
+        (
+            WebRenderImageKey,
+            ImageMaskMode,
+            Option<image_mask::TilingKey>,
+        ),
+        (WebRenderImageKey, usize),
+    >,
+    image_mask_bytes: usize,
+
     /// Maps a pending image id to a set of sizes for which that image was requested
     svg_rasterization_task_store: SvgRasterizationTaskStore,
 
@@ -732,6 +750,7 @@ impl ImageCacheStore {
             let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response &&
             let Some(id) = image.id
         {
+            self.remove_image_masks(id);
             self.paint_api.update_images(
                 self.webview_id.into(),
                 vec![ImageUpdate::DeleteImage(id)].into(),
@@ -750,6 +769,7 @@ impl ImageCacheStore {
         {
             if let Some(result) = entry.result {
                 if let Some(image_id) = result.id {
+                    self.remove_image_masks(image_id);
                     self.paint_api.update_images(
                         self.webview_id.into(),
                         vec![ImageUpdate::DeleteImage(image_id)].into(),
@@ -859,6 +879,8 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
                 completed_loads: HashMap::new(),
                 vector_images: FxHashMap::default(),
                 rasterized_vector_images: FxHashMap::default(),
+                image_masks: FxHashMap::default(),
+                image_mask_bytes: 0,
                 broken_image_icon_image: OnceCell::new(),
                 paint_api: paint_api.clone(),
                 pipeline_id,
@@ -1369,6 +1391,106 @@ impl ImageCache for ImageCacheImpl {
         *self.svg_id_image_id_map.lock() = Default::default();
     }
 
+    fn mask_image_key(
+        &self,
+        image: &RasterImage,
+        mode: ImageMaskMode,
+        tiling: Option<ImageMaskTiling>,
+    ) -> Option<WebRenderImageKey> {
+        // Animated masks need updates synchronized with the source frame.
+        if image.should_animate() {
+            return None;
+        }
+        let source = image.id?;
+        let frame = image.first_frame();
+        let tiling_key = match tiling {
+            Some(tiling) => Some(image_mask::tiling_key(tiling)?),
+            None => None,
+        };
+        let cache_key = (source, mode, tiling_key);
+        let mut store = self.store.lock();
+        if let Some((key, _)) = store.image_masks.get(&cache_key) {
+            return Some(*key);
+        }
+        let output_size = tiling.map_or(
+            DeviceIntSize::new(frame.width as i32, frame.height as i32),
+            |tiling| tiling.size,
+        );
+        let output_bytes = usize::try_from(output_size.width)
+            .ok()?
+            .checked_mul(usize::try_from(output_size.height).ok()?)?;
+        let source_bytes = (frame.width as usize).checked_mul(frame.height as usize)?;
+        if output_bytes == 0 ||
+            output_bytes > MAX_MASK_BYTES ||
+            source_bytes > MAX_MASK_BYTES ||
+            store.image_mask_bytes.checked_add(output_bytes)? > MAX_MASK_CACHE_BYTES
+        {
+            return None;
+        }
+        // Decoded RGBA/BGRA pixels are premultiplied. The weighted sum therefore
+        // already includes alpha and must not be multiplied by alpha again.
+        let luminance = |r: u8, g: u8, b: u8| -> u8 {
+            ((2125 * u32::from(r) + 7154 * u32::from(g) + 721 * u32::from(b) + 5000) / 10000) as u8
+        };
+        let bytes = if mode == ImageMaskMode::Luminance {
+            match image.format {
+                PixelFormat::RGBA8 => frame
+                    .bytes
+                    .chunks_exact(4)
+                    .map(|pixel| luminance(pixel[0], pixel[1], pixel[2]))
+                    .collect(),
+                PixelFormat::BGRA8 => frame
+                    .bytes
+                    .chunks_exact(4)
+                    .map(|pixel| luminance(pixel[2], pixel[1], pixel[0]))
+                    .collect(),
+                PixelFormat::RGB8 => frame
+                    .bytes
+                    .chunks_exact(3)
+                    .map(|pixel| luminance(pixel[0], pixel[1], pixel[2]))
+                    .collect(),
+                PixelFormat::K8 => frame.bytes.to_vec(),
+                PixelFormat::KA8 => return None,
+            }
+        } else {
+            match image.format {
+                PixelFormat::RGBA8 | PixelFormat::BGRA8 => {
+                    frame.bytes.chunks_exact(4).map(|pixel| pixel[3]).collect()
+                },
+                PixelFormat::KA8 => frame.bytes.chunks_exact(2).map(|pixel| pixel[1]).collect(),
+                PixelFormat::RGB8 | PixelFormat::K8 => {
+                    vec![255; frame.width as usize * frame.height as usize]
+                },
+            }
+        };
+        let bytes = match tiling {
+            Some(tiling) => {
+                image_mask::tile_mask(&bytes, frame.width as usize, frame.height as usize, tiling)
+            },
+            None => bytes,
+        };
+        let key = store
+            .paint_api
+            .generate_image_key_blocking(store.webview_id)?;
+        let descriptor = webrender_api::ImageDescriptor::new(
+            output_size.width,
+            output_size.height,
+            webrender_api::ImageFormat::R8,
+            webrender_api::ImageDescriptorFlags::empty(),
+        );
+        store.paint_api.add_image(
+            key,
+            descriptor,
+            SerializableImageData::Raw(servo_base::generic_channel::GenericSharedMemory::from_vec(
+                bytes,
+            )),
+            false,
+        );
+        store.image_masks.insert(cache_key, (key, output_bytes));
+        store.image_mask_bytes += output_bytes;
+        Some(key)
+    }
+
     fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>> {
         let store = self.store.lock();
         store
@@ -1388,6 +1510,22 @@ impl ImageCache for ImageCacheImpl {
 }
 
 impl ImageCacheStore {
+    fn remove_image_masks(&mut self, source: WebRenderImageKey) {
+        let mut deletions = smallvec::SmallVec::new();
+        self.image_masks.retain(|(image, _, _), (key, bytes)| {
+            if *image != source {
+                return true;
+            }
+            self.image_mask_bytes -= *bytes;
+            deletions.push(ImageUpdate::DeleteImage(*key));
+            false
+        });
+        if !deletions.is_empty() {
+            self.paint_api
+                .update_images(self.webview_id.into(), deletions);
+        }
+    }
+
     /// Clear the image cache.
     // Webrender currently does not care about keys that are loaded but do not have an image attached to it.
     fn clear(&mut self) {
@@ -1413,6 +1551,12 @@ impl ImageCacheStore {
                     .map(ImageUpdate::DeleteImage),
             )
             .collect();
+        let mut deletions = deletions;
+        deletions.extend(
+            self.image_masks
+                .drain()
+                .map(|(_, (key, _))| ImageUpdate::DeleteImage(key)),
+        );
         if !deletions.is_empty() {
             self.paint_api
                 .update_images(self.webview_id.into(), deletions);
@@ -1427,6 +1571,7 @@ impl ImageCacheStore {
         self.pending_loads = Default::default();
         self.key_cache = Default::default();
 
+        self.image_mask_bytes = 0;
         let _ = self.broken_image_icon_image.take();
     }
 }

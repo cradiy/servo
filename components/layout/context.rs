@@ -13,7 +13,8 @@ use layout_api::{
     PendingImageState, PendingRasterizationImage,
 };
 use net_traits::image_cache::{
-    Image as CachedImage, ImageCache, ImageCacheResult, ImageOrMetadataAvailable, PendingImageId,
+    Image as CachedImage, ImageCache, ImageCacheResult, ImageMaskMode, ImageMaskTiling,
+    ImageOrMetadataAvailable, PendingImageId,
 };
 use net_traits::request::InternalRequest;
 use parking_lot::{Mutex, RwLock};
@@ -287,6 +288,23 @@ impl ImageResolver {
                 self.rasterize_vector_image(vector_image.id, size, node, vector_image.svg_id)
                     .and_then(|rasterized_image| rasterized_image.id)
             }),
+        }
+    }
+
+    pub(crate) fn mask_key_from_cached_image(
+        &self,
+        image: &CachedImage,
+        size: DeviceIntSize,
+        node: Option<OpaqueNode>,
+        mode: ImageMaskMode,
+        tiling: Option<ImageMaskTiling>,
+    ) -> Option<ImageKey> {
+        match image {
+            CachedImage::Raster(image) => self.image_cache.mask_image_key(image, mode, tiling),
+            CachedImage::Vector(image) => {
+                let raster = self.rasterize_vector_image(image.id, size, node?, image.svg_id)?;
+                self.image_cache.mask_image_key(&raster, mode, tiling)
+            },
         }
     }
 

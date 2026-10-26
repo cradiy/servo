@@ -1,0 +1,17 @@
+<!doctype html><html class="reftest-wait"><meta charset="utf-8"><title>Static image mask tiling geometry</title>
+<link rel="help" href="https://drafts.csswg.org/css-masking-1/#the-mask-repeat">
+<link rel="match" href="mask-image-repeat-geometry-ref.html">
+<meta name="assert" content="Image masks tile independently on each axis and honor space, round, negative positions, and single-tile space fallback.">
+<style>body{margin:20px;background:white}.grid{display:grid;grid-template-columns:repeat(4,96px);gap:20px}.box{width:96px;height:64px}.box{background:green;mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%3E%3Cpath%20d%3D%22M0%200h8v8H0z%22%20fill%3D%22white%22%2F%3E%3C%2Fsvg%3E")}</style>
+<div class="grid"><div class="box" style="mask-size:16px 16px;mask-repeat:repeat"></div><div class="box" style="mask-size:16px 16px;mask-repeat:repeat-x;mask-position:0 24px"></div><div class="box" style="mask-size:16px 16px;mask-repeat:repeat-y;mask-position:40px 0"></div><div class="box" style="mask-size:28px 28px;mask-repeat:space"></div><div class="box" style="mask-size:34px 29px;mask-repeat:round"></div><div class="box" style="mask-size:16px 16px;mask-repeat:repeat;mask-position:-5px -3px"></div><div class="box" style="mask-size:60px 40px;mask-repeat:space;mask-position:right bottom"></div><div class="box" style="mask-size:16px 16px;mask-repeat:repeat;mask-mode:luminance"></div><div id="resized" class="box" style="mask-size:16px 16px;mask-repeat:repeat"></div></div>
+<script>
+window.addEventListener('load', () => {
+ let frames = 0;
+ function update() {
+  if (++frames < 4) { requestAnimationFrame(update); return; }
+  document.getElementById('resized').style.width = '80px';
+  requestAnimationFrame(() => requestAnimationFrame(() => document.documentElement.classList.remove('reftest-wait')));
+ }
+ requestAnimationFrame(update);
+});
+</script></html>

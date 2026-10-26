@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Image alpha masks clip the complete element group</title>
+<link rel="help" href="https://drafts.fxtf.org/css-masking-1/#MaskValues">
+<link rel="match" href="mask-image-alpha-group-position-ref.html">
+<meta name="assert" content="Image alpha, independent of RGB, clips both an element's background and its descendants at the requested size and position.">
+<style>
+body { margin: 0; background: white; }
+.box { position: absolute; top: 20px; width: 80px; height: 80px; background: green; mask: var(--image) center / 80px 80px no-repeat; }
+.child { width: 40px; height: 80px; background: orange; }
+.black { --image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cpath d='M20 10h40v60H20z' fill='black'/%3E%3C/svg%3E"); }
+.white { --image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cpath d='M20 10h40v60H20z' fill='white'/%3E%3C/svg%3E"); }
+.small { mask-size: 40px 40px; mask-position: right bottom; }
+.missing { mask-image: url('data:image/png;base64,AA=='); }
+</style>
+<div class="box black" style="left:20px"><div class="child"></div></div>
+<div class="box white" style="left:120px"><div class="child"></div></div>
+<div class="box black small" style="left:220px"><div class="child"></div></div>
+<div class="box missing" style="left:320px"><div class="child"></div></div>

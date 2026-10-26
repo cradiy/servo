@@ -41,6 +41,22 @@ pub trait FontResolver: Sync + Send + MallocSizeOf {
     ) -> Option<fontdb::ID>;
 }
 
+/// Interpretation of a static image used as a CSS mask.
+#[derive(Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
+pub enum ImageMaskMode {
+    Alpha,
+    Luminance,
+}
+
+/// Device-pixel geometry for a repeated image mask, relative to its output origin.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageMaskTiling {
+    pub size: DeviceIntSize,
+    pub tile_size: [f32; 2],
+    pub spacing: [f32; 2],
+    pub offset: [f32; 2],
+}
+
 pub type VectorImageId = PendingImageId;
 
 // Represents either a raster image for which the pixel data is available
@@ -209,6 +225,14 @@ pub trait ImageCache: Sync + Send {
     /// things like canvas rendering. Returns `None` when an [`ImageKey`] cannot
     /// be generated properly.
     fn get_image_key(&self) -> Option<ImageKey>;
+
+    /// Cache a static image as a single-channel WebRender mask texture.
+    fn mask_image_key(
+        &self,
+        image: &RasterImage,
+        mode: ImageMaskMode,
+        tiling: Option<ImageMaskTiling>,
+    ) -> Option<ImageKey>;
 
     /// Definitively check whether there is a cached, fully loaded image available.
     fn get_image(

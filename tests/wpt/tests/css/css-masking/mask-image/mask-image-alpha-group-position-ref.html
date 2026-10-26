@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Image alpha masks clip the complete element group</title>
+<style>
+body { margin: 0; background: white; }
+.box { position: absolute; top: 30px; width: 40px; height: 60px; background: green; }
+.child { width: 20px; height: 60px; background: orange; }
+</style>
+<div class="box" style="left:40px"><div class="child"></div></div>
+<div class="box" style="left:140px"><div class="child"></div></div>
+<div class="box" style="left:270px;top:65px;width:20px;height:30px"></div>
