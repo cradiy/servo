@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>KeyframeEffect sequence validation and timing initialization</title>
+<link rel="help" href="https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-keyframeeffect">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+test(() => {
+  const effect = new KeyframeEffect(null, [], 240);
+  const timing = effect.getTiming();
+  assert_equals(timing.duration, 240);
+  assert_equals(timing.iterations, 1);
+  assert_equals(timing.fill, 'auto');
+}, 'Numeric constructor duration preserves timing defaults');
+
+test(() => {
+  const options = { duration: 320, delay: -40, endDelay: 25,
+    iterations: 2.5, iterationStart: 0.3, fill: 'both',
+    direction: 'alternate', easing: 'ease-in' };
+  const timing = new KeyframeEffect(null, [], options).getTiming();
+  for (const key of Object.keys(options)) assert_equals(timing[key], options[key], key);
+}, 'Constructor initializes every timing field');
+
+test(() => {
+  for (const options of [-2, {iterations: -1}, {duration: NaN},
+      {iterationStart: -0.1}, {easing: 'linear garbage'}]) {
+    assert_throws_js(TypeError, () => new KeyframeEffect(null, [], options));
+  }
+}, 'Invalid constructor timing throws');
+
+test(() => {
+  const effect = new KeyframeEffect(null, [{opacity: 0}, {opacity: 0.2},
+    {opacity: 0.4, offset: 0.8}, {opacity: 1}]);
+  const frames = effect.getKeyframes();
+  assert_array_equals(frames.map(frame => frame.offset), [null, null, 0.8, null]);
+  assert_array_equals(frames.map(frame => frame.computedOffset), [0, 0.4, 0.8, 1]);
+  effect.setKeyframes([{opacity: 1}]);
+  assert_equals(effect.getKeyframes()[0].computedOffset, 1);
+}, 'Missing offsets are distributed without changing specified offsets');
+
+test(() => {
+  const effect = new KeyframeEffect(null, [{opacity: 0}, {opacity: 1}]);
+  const original = JSON.stringify(effect.getKeyframes());
+  for (const frames of [[{offset: -0.1}], [{offset: 1.1}],
+      [{offset: 0.7}, {offset: 0.2}], [{easing: 'linear garbage'}], [7]]) {
+    assert_throws_js(TypeError, () => effect.setKeyframes(frames));
+    assert_equals(JSON.stringify(effect.getKeyframes()), original);
+  }
+}, 'Rejected keyframes leave the existing effect unchanged');
+
+test(() => {
+  const effect = new KeyframeEffect(null, [{opacity: 0.5}]);
+  const original = JSON.stringify(effect.getKeyframes());
+  const error = new Error('property getter failure');
+  assert_throws_exactly(error, () => effect.setKeyframes([{get opacity() { throw error; }}]));
+  assert_equals(JSON.stringify(effect.getKeyframes()), original);
+}, 'Property getter exceptions propagate without replacing keyframes');
+
+test(() => {
+  const target = document.createElement('div');
+  assert_throws_js(TypeError, () => target.animate([], {duration: -5}));
+  assert_throws_js(TypeError, () => target.animate([{offset: 2}], 100));
+}, 'Element.animate propagates effect initialization errors');
+</script>

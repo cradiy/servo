@@ -21,11 +21,15 @@ use js::rust::{
 };
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
+use script_bindings::codegen::GenericBindings::AnimationEffectBinding::{
+    EffectTiming, OptionalEffectTiming,
+};
 use script_bindings::codegen::GenericBindings::KeyframeEffectBinding::{
     BaseKeyframe, CompositeOperationOrAuto,
 };
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrKeyframeEffectOptions;
+use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrString;
 use script_bindings::conversions::StringificationBehavior;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::inheritance::Castable;
@@ -36,6 +40,7 @@ use script_bindings::num::Finite;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
+use style::parser::Parse;
 use style::parser::ParserContext;
 use style::properties::generated::PropertyDeclaration;
 use style::properties::{
@@ -43,6 +48,7 @@ use style::properties::{
     SourcePropertyDeclaration,
 };
 use style::stylesheets::CssRuleType;
+use style::values::specified::TimingFunction;
 use style_traits::{CssWriter, ParsingMode, ToCss};
 
 use crate::css::css::parser_context_for_document;
@@ -102,8 +108,8 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
         _: Option<HandleObject>,
         target: Option<&Element>,
         keyframes: *mut JSObject,
-        _options: UnrestrictedDoubleOrKeyframeEffectOptions,
-    ) -> DomRoot<KeyframeEffect> {
+        options: UnrestrictedDoubleOrKeyframeEffectOptions,
+    ) -> Fallible<DomRoot<KeyframeEffect>> {
         // Step 1. Create a new KeyframeEffect object, effect.
         let effect = KeyframeEffect::new(cx, window);
 
@@ -113,12 +119,33 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
         // TODO: Step 3. Set the target pseudo-selector to the result corresponding to
         // the first matching condition below:
 
-        // TODO: Step 4. Let timing input be the result corresponding to the first matching
-        // condition below:
+        let timing = match options {
+            UnrestrictedDoubleOrKeyframeEffectOptions::UnrestrictedDouble(duration) => {
+                EffectTiming {
+                    duration: UnrestrictedDoubleOrString::UnrestrictedDouble(duration),
+                    ..Default::default()
+                }
+            },
+            UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(options) => {
+                options.parent
+            },
+        };
 
         // Step 5. Call the procedure to update the timing properties of an animation effect of
         // effect from timing input.
         // If that procedure causes an exception to be thrown, propagate the exception and abort this procedure.
+        effect
+            .upcast::<AnimationEffect>()
+            .update_the_timing_properties(&OptionalEffectTiming {
+                delay: Some(timing.delay),
+                endDelay: Some(timing.endDelay),
+                fill: Some(timing.fill),
+                iterationStart: Some(timing.iterationStart),
+                iterations: Some(timing.iterations),
+                duration: Some(timing.duration),
+                direction: Some(timing.direction),
+                easing: Some(timing.easing),
+            })?;
 
         // TODO: Step 6. If options is a KeyframeEffectOptions object, assign the composite property of effect
         // to the corresponding value from options.
@@ -129,9 +156,9 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
 
         // Step 7. Initialize the set of keyframes by performing the procedure defined for setKeyframes()
         // passing keyframes as the input.
-        effect.SetKeyframes(cx, keyframes);
+        effect.SetKeyframes(cx, keyframes)?;
 
-        effect
+        Ok(effect)
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-getkeyframes>
@@ -151,21 +178,19 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
         // the computed keyframes for this keyframe effect.
         // Otherwise,
         // the result of applying the procedure compute missing keyframe offsets to the keyframes for this keyframe effect.
-        // TODO: We don't compute missing keyframe offsets yet. But that will likely happen in stylo, not here.
         let keyframes = self.keyframes.borrow();
 
         // Step 3. For each keyframe in keyframes perform the following steps:
-        for keyframe in keyframes.iter() {
+        let offsets = computed_offsets(&keyframes);
+        for (keyframe, computed_offset) in keyframes.iter().zip(offsets) {
             // Step 3.1 Initialize a dictionary object, output keyframe, using the following definition:
-            // TODO Step 3.2 Set the offset, computedOffset, easing, and composite members of output keyframe
+            // Step 3.2 Set the offset, computedOffset, easing, and composite members of output keyframe
             // to the respective keyframe offset, computed keyframe offset, keyframe-specific easing function,
             // and keyframe-specific composite operation values of keyframe.
             let base_keyframe = BaseComputedKeyframe {
                 composite: keyframe.composite,
                 offset: keyframe.offset,
-                // FIXME: We don't post-process the offset of keyframes to find suitable offset values for null
-                // keyframe offsets yet, so we just use the offset as-is.
-                computedOffset: keyframe.offset,
+                computedOffset: Some(Finite::wrap(computed_offset)),
                 easing: keyframe.easing_function.clone(),
             };
             rooted!(&in(cx) let mut output_keyframe = JS_NewObject(cx, None));
@@ -216,9 +241,9 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                     output_keyframe.handle(),
                     &property_name,
                     value.handle(),
-                    PropertyFlags::ENUMERABLE |
-                        PropertyFlags::WRITABLE |
-                        PropertyFlags::CONFIGURABLE,
+                    PropertyFlags::ENUMERABLE
+                        | PropertyFlags::WRITABLE
+                        | PropertyFlags::CONFIGURABLE,
                 );
                 if !success {
                     if cfg!(debug_assertions) {
@@ -237,15 +262,14 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-setkeyframes>
-    fn SetKeyframes(&self, cx: &mut JSContext, keyframes: *mut JSObject) {
+    fn SetKeyframes(&self, cx: &mut JSContext, keyframes: *mut JSObject) -> Fallible<()> {
         // > This effect’s set of keyframes is replaced with the result of performing the procedure to
         // > process a keyframes argument. If that procedure throws an exception, this effect’s
         // > keyframes are not modified.
         let document = self.upcast::<AnimationEffect>().window().Document();
-        let Ok(keyframes) = process_a_keyframes_argument(cx, &document, keyframes) else {
-            return;
-        };
+        let keyframes = process_a_keyframes_argument(cx, &document, keyframes)?;
         *self.keyframes.safe_borrow_mut(cx.no_gc()) = keyframes;
+        Ok(())
     }
 }
 
@@ -290,7 +314,7 @@ fn process_a_keyframes_argument(
 
         Ok(ControlFlow::Continue(()))
     });
-    match result {
+    let keyframes = match result {
         Ok(()) => Ok(keyframes),
         Err(ForOfIterationFailure::ValueIsNotIterable) => {
             // TODO: Step 5, Otherwise:
@@ -298,7 +322,56 @@ fn process_a_keyframes_argument(
         },
         Err(ForOfIterationFailure::JSFailed) => Err(Error::JSFailed),
         Err(ForOfIterationFailure::Other(error)) => Err(error),
+    }?;
+    let mut previous_offset = 0.0;
+    let urlextradata = document.url().into_url().into();
+    let context = parser_context_for_document(
+        document,
+        CssRuleType::Style,
+        ParsingMode::DEFAULT,
+        &urlextradata,
+    );
+    for keyframe in &keyframes {
+        if let Some(offset) = keyframe.offset {
+            if *offset < previous_offset || *offset > 1.0 {
+                return Err(Error::Type(
+                    c"Keyframe offsets must be ordered and between zero and one".to_owned(),
+                ));
+            }
+            previous_offset = *offset;
+        }
+        let easing = keyframe.easing_function.str();
+        Parser::new(&easing)
+            .parse_entirely(|parser| TimingFunction::parse(&context, parser))
+            .map_err(|_| Error::Type(c"Invalid keyframe easing".to_owned()))?;
     }
+    Ok(keyframes)
+}
+
+fn computed_offsets(keyframes: &[Keyframe]) -> Vec<f64> {
+    let mut offsets: Vec<_> = keyframes
+        .iter()
+        .map(|frame| frame.offset.map(|offset| *offset))
+        .collect();
+    if let Some(last) = offsets.last_mut() {
+        last.get_or_insert(1.0);
+    }
+    if let Some(first) = offsets.first_mut() {
+        first.get_or_insert(0.0);
+    }
+    let mut previous = 0;
+    for index in 1..offsets.len() {
+        if let Some(end) = offsets[index] {
+            let start = offsets[previous].unwrap();
+            for current in previous + 1..index {
+                offsets[current] = Some(
+                    start + (end - start) * (current - previous) as f64 / (index - previous) as f64,
+                );
+            }
+            previous = index;
+        }
+    }
+    offsets.into_iter().map(Option::unwrap).collect()
 }
 
 /// <https://drafts.csswg.org/web-animations-1/#keyframe>
@@ -403,7 +476,7 @@ fn get_property_declarations(
     // if they're animated properties, that's easier.
     let mut ids = IdVector::new(cx);
     if !GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) {
-        return Ok(Vec::new());
+        return Err(Error::JSFailed);
     }
 
     let mut declarations = Vec::with_capacity(ids.len());
@@ -441,7 +514,7 @@ fn get_property_declarations(
                 property_value.handle_mut().into_handle_mut(),
             )
         } {
-            continue;
+            return Err(Error::JSFailed);
         }
 
         // Step 6.3 Convert raw value to a DOMString or to a sequence of DOMStrings property values as follows:

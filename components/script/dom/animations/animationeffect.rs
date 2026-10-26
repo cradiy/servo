@@ -163,7 +163,9 @@ impl AnimationEffect {
                     ParsingMode::DEFAULT,
                     &urlextradata,
                 );
-                TimingFunction::parse(&parser_context, &mut parser).map_err(|_| ())
+                parser
+                    .parse_entirely(|parser| TimingFunction::parse(&parser_context, parser))
+                    .map_err(|_| ())
             })
             .transpose()
         else {
