@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rounded image mask reference</title>
+<style>
+body { margin:20px; background:white }
+.grid { display:grid; grid-template-columns:repeat(3,120px); gap:24px }
+.box { position:relative; width:120px; height:100px }
+.masked { box-sizing:border-box; border:8px solid transparent; padding:12px; border-radius:32px / 24px; mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%3E%3Crect%20width%3D%221%22%20height%3D%221%22%20fill%3D%22white%22%2F%3E%3C%2Fsvg%3E"),url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%3E%3Crect%20width%3D%221%22%20height%3D%221%22%20fill%3D%22white%22%2F%3E%3C%2Fsvg%3E"); }
+.paint { position:absolute; inset:-8px; background:green }
+.patch { position:absolute; background:green }
+</style>
+<div class="grid">
+<div class="box">
+<div class="patch" style="left:0px;top:0px;width:120px;height:100px;border-radius:32px / 24px;background:green"></div>
+<div class="patch" style="left:20px;top:20px;width:80px;height:60px;border-radius:12px / 4px;background:white"></div>
+</div>
+<div class="box">
+<div class="patch" style="left:20px;top:20px;width:80px;height:60px;border-radius:12px / 4px;background:green"></div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;top:0px;width:120px;height:100px;border-radius:32px / 24px;background:green"></div>
+<div class="patch" style="left:8px;top:8px;width:104px;height:84px;border-radius:24px / 16px;background:white"></div>
+</div>
+<div class="box">
+<div class="patch" style="left:8px;top:8px;width:104px;height:84px;border-radius:24px / 16px;background:green"></div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;top:0px;width:120px;height:100px;border-radius:48px / 40px;background:green"></div>
+<div class="patch" style="left:20px;top:20px;width:80px;height:60px;border-radius:28px / 20px;background:white"></div>
+</div>
+</div>

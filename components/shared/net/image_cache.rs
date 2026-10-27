@@ -57,6 +57,26 @@ pub struct ImageMaskTiling {
     pub offset: [f32; 2],
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, MallocSizeOf, PartialEq)]
+pub enum ImageMaskComposite {
+    Add,
+    Subtract,
+    Intersect,
+    Exclude,
+}
+
+/// A mask layer in output-relative device coordinates. Rectangles are x, y, width, height.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageMaskLayer {
+    pub image: Option<ImageKey>,
+    pub rect: [f32; 4],
+    pub clip: [f32; 4],
+    pub rounded_clip: [f32; 4],
+    /// Elliptical radii in top-left, top-right, bottom-right, bottom-left order.
+    pub radii: [[f32; 2]; 4],
+    pub composite: ImageMaskComposite,
+}
+
 pub type VectorImageId = PendingImageId;
 
 // Represents either a raster image for which the pixel data is available
@@ -232,6 +252,13 @@ pub trait ImageCache: Sync + Send {
         image: &RasterImage,
         mode: ImageMaskMode,
         tiling: Option<ImageMaskTiling>,
+    ) -> Option<ImageKey>;
+
+    /// Composite image masks in CSS list order, with the first layer on top.
+    fn composite_mask_images(
+        &self,
+        layers: &[ImageMaskLayer],
+        size: DeviceIntSize,
     ) -> Option<ImageKey>;
 
     /// Definitively check whether there is a cached, fully loaded image available.

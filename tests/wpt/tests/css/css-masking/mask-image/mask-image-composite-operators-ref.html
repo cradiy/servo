@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Image mask compositing reference</title>
+<style>body{margin:20px;background:white}.grid{display:grid;grid-template-columns:repeat(4,100px);gap:20px}.box{width:100px;height:60px;position:relative}.masked{background:green;mask-repeat:no-repeat;mask-mode:alpha}.patch{position:absolute;top:0;height:60px;background:green}</style>
+<div class="grid">
+<div class="box">
+<div class="patch" style="left:0px;width:100px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:40px;width:20px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:1">
+</div>
+<div class="patch" style="left:60px;width:40px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:0.5019607843137255">
+</div>
+<div class="patch" style="left:40px;width:20px;opacity:0.7529411764705882">
+</div>
+<div class="patch" style="left:60px;width:40px;opacity:0.5019607843137255">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:0.5019607843137255">
+</div>
+<div class="patch" style="left:40px;width:20px;opacity:0.25098039215686274">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:40px;width:20px;opacity:0.25098039215686274">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:0.5019607843137255">
+</div>
+<div class="patch" style="left:40px;width:20px;opacity:0.4980392156862745">
+</div>
+<div class="patch" style="left:60px;width:40px;opacity:0.5019607843137255">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:40px;width:60px;opacity:1">
+</div>
+</div>
+<div class="box">
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:60px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:0px;width:40px;opacity:1">
+</div>
+<div class="patch" style="left:60px;width:40px;opacity:1">
+</div>
+</div>
+<div class="box">
+<div class="patch" style="left:40px;width:20px;opacity:1">
+</div>
+</div>
+</div>

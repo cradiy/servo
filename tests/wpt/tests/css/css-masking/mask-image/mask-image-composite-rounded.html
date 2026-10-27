@@ -1,0 +1,35 @@
+<!doctype html>
+<html class="reftest-wait">
+<meta charset="utf-8">
+<title>Rounded image mask layers</title>
+<link rel="help" href="https://drafts.csswg.org/css-masking-1/#the-mask-clip">
+<link rel="match" href="mask-image-composite-rounded-ref.html">
+<meta name="fuzzy" content="maxDifference=0-32;totalPixels=0-4000">
+<meta name="assert" content="Each composite mask layer clips to its rounded border, padding or content box; radius changes invalidate cached composites.">
+<style>
+body { margin:20px; background:white }
+.grid { display:grid; grid-template-columns:repeat(3,120px); gap:24px }
+.box { position:relative; width:120px; height:100px }
+.masked { box-sizing:border-box; border:8px solid transparent; padding:12px; border-radius:32px / 24px; mask-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%3E%3Crect%20width%3D%221%22%20height%3D%221%22%20fill%3D%22white%22%2F%3E%3C%2Fsvg%3E"),url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221%22%20height%3D%221%22%3E%3Crect%20width%3D%221%22%20height%3D%221%22%20fill%3D%22white%22%2F%3E%3C%2Fsvg%3E"); }
+.paint { position:absolute; inset:-8px; background:green }
+.patch { position:absolute; background:green }
+</style>
+<div class="grid">
+<div  class="box masked" style="mask-clip:border-box,content-box;mask-composite:subtract"><div class="paint"></div></div>
+<div  class="box masked" style="mask-clip:padding-box,content-box;mask-composite:intersect"><div class="paint"></div></div>
+<div  class="box masked" style="mask-clip:border-box,padding-box;mask-composite:exclude"><div class="paint"></div></div>
+<div  class="box masked" style="mask-clip:content-box,padding-box;mask-composite:add"><div class="paint"></div></div>
+<div id="changed" class="box masked" style="mask-clip:border-box,content-box;mask-composite:subtract"><div class="paint"></div></div>
+</div>
+<script>
+addEventListener('load',()=>{
+ let frames=0;
+ function update(){
+  if(++frames<4){requestAnimationFrame(update);return;}
+  document.getElementById('changed').style.borderRadius='48px / 40px';
+  requestAnimationFrame(()=>requestAnimationFrame(()=>document.documentElement.classList.remove('reftest-wait')));
+ }
+ requestAnimationFrame(update);
+});
+</script>
+</html>

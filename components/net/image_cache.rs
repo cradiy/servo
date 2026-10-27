@@ -17,9 +17,9 @@ use malloc_size_of_derive::MallocSizeOf;
 use mime::Mime;
 use net_traits::image_cache::{
     FontResolver, Image, ImageCache, ImageCacheFactory, ImageCacheResponseCallback,
-    ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener, ImageMaskMode, ImageMaskTiling,
-    ImageOrMetadataAvailable, ImageResponse, PendingImageId, RasterizationCompleteResponse,
-    VectorImage,
+    ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener, ImageMaskLayer, ImageMaskMode,
+    ImageMaskTiling, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
+    RasterizationCompleteResponse, VectorImage,
 };
 use net_traits::request::CorsSettings;
 use net_traits::{FetchResponseMsg, Metadata, NetworkError};
@@ -526,6 +526,8 @@ struct ImageCacheStore {
         (WebRenderImageKey, usize),
     >,
     image_mask_bytes: usize,
+    mask_pixels: FxHashMap<WebRenderImageKey, image_mask::MaskPixels>,
+    composite_masks: FxHashMap<image_mask::CompositeKey, (WebRenderImageKey, usize)>,
 
     /// Maps a pending image id to a set of sizes for which that image was requested
     svg_rasterization_task_store: SvgRasterizationTaskStore,
@@ -881,6 +883,8 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
                 rasterized_vector_images: FxHashMap::default(),
                 image_masks: FxHashMap::default(),
                 image_mask_bytes: 0,
+                mask_pixels: FxHashMap::default(),
+                composite_masks: FxHashMap::default(),
                 broken_image_icon_image: OnceCell::new(),
                 paint_api: paint_api.clone(),
                 pipeline_id,
@@ -1423,7 +1427,8 @@ impl ImageCache for ImageCacheImpl {
         if output_bytes == 0 ||
             output_bytes > MAX_MASK_BYTES ||
             source_bytes > MAX_MASK_BYTES ||
-            store.image_mask_bytes.checked_add(output_bytes)? > MAX_MASK_CACHE_BYTES
+            store.image_mask_bytes.checked_add(output_bytes)? > MAX_MASK_CACHE_BYTES ||
+            store.image_masks.len() + store.composite_masks.len() >= 1024
         {
             return None;
         }
@@ -1478,16 +1483,64 @@ impl ImageCache for ImageCacheImpl {
             webrender_api::ImageFormat::R8,
             webrender_api::ImageDescriptorFlags::empty(),
         );
+        let bytes = Arc::new(bytes);
+        store.paint_api.add_image(
+            key,
+            descriptor,
+            SerializableImageData::Raw(
+                servo_base::generic_channel::GenericSharedMemory::from_arc_vec(bytes.clone()),
+            ),
+            false,
+        );
+        store.mask_pixels.insert(
+            key,
+            image_mask::MaskPixels {
+                bytes,
+                size: output_size,
+            },
+        );
+        store.image_masks.insert(cache_key, (key, output_bytes));
+        store.image_mask_bytes += output_bytes;
+        Some(key)
+    }
+
+    fn composite_mask_images(
+        &self,
+        layers: &[ImageMaskLayer],
+        size: DeviceIntSize,
+    ) -> Option<WebRenderImageKey> {
+        let cache_key = image_mask::composite_key(layers, size)?;
+        let mut store = self.store.lock();
+        if let Some((key, _)) = store.composite_masks.get(&cache_key) {
+            return Some(*key);
+        }
+        let length = (size.width as usize).checked_mul(size.height as usize)?;
+        if length > MAX_MASK_BYTES ||
+            store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES ||
+            store.image_masks.len() + store.composite_masks.len() >= 1024
+        {
+            return None;
+        }
+        let pixels = image_mask::composite(layers, size, &store.mask_pixels)?;
+        let key = store
+            .paint_api
+            .generate_image_key_blocking(store.webview_id)?;
+        let descriptor = webrender_api::ImageDescriptor::new(
+            size.width,
+            size.height,
+            webrender_api::ImageFormat::R8,
+            webrender_api::ImageDescriptorFlags::empty(),
+        );
         store.paint_api.add_image(
             key,
             descriptor,
             SerializableImageData::Raw(servo_base::generic_channel::GenericSharedMemory::from_vec(
-                bytes,
+                pixels,
             )),
             false,
         );
-        store.image_masks.insert(cache_key, (key, output_bytes));
-        store.image_mask_bytes += output_bytes;
+        store.composite_masks.insert(cache_key, (key, length));
+        store.image_mask_bytes += length;
         Some(key)
     }
 
@@ -1514,6 +1567,24 @@ impl ImageCacheStore {
         let mut deletions = smallvec::SmallVec::new();
         self.image_masks.retain(|(image, _, _), (key, bytes)| {
             if *image != source {
+                return true;
+            }
+            self.image_mask_bytes -= *bytes;
+            deletions.push(ImageUpdate::DeleteImage(*key));
+            false
+        });
+        let removed: FxHashSet<_> = deletions
+            .iter()
+            .filter_map(|update| match update {
+                ImageUpdate::DeleteImage(key) => Some(*key),
+                _ => None,
+            })
+            .collect();
+        for key in &removed {
+            self.mask_pixels.remove(key);
+        }
+        self.composite_masks.retain(|layers, (key, bytes)| {
+            if !layers.uses_any(&removed) {
                 return true;
             }
             self.image_mask_bytes -= *bytes;
@@ -1557,6 +1628,11 @@ impl ImageCacheStore {
                 .drain()
                 .map(|(_, (key, _))| ImageUpdate::DeleteImage(key)),
         );
+        deletions.extend(
+            self.composite_masks
+                .drain()
+                .map(|(_, (key, _))| ImageUpdate::DeleteImage(key)),
+        );
         if !deletions.is_empty() {
             self.paint_api
                 .update_images(self.webview_id.into(), deletions);
@@ -1571,6 +1647,7 @@ impl ImageCacheStore {
         self.pending_loads = Default::default();
         self.key_cache = Default::default();
 
+        self.mask_pixels.clear();
         self.image_mask_bytes = 0;
         let _ = self.broken_image_icon_image.take();
     }
