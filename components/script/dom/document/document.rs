@@ -5166,6 +5166,7 @@ impl Document {
         //
         // We still want to update the animations, because our timeline
         // value might have been advanced previously via the TestBinding.
+        self.animation_manager.tick_script_animations(cx, self.window());
         let current_timeline_value = self.current_animation_timeline_value();
         self.animation_manager
             .update_for_new_timeline_value(&self.window, current_timeline_value);

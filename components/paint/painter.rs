@@ -1565,7 +1565,11 @@ impl Painter {
         }
     }
 
-    pub(crate) fn webviews_needing_repaint(&self) -> Vec<WebViewId> {
+    pub(crate) fn webviews_needing_repaint(&mut self) -> Vec<WebViewId> {
+        if self.needs_repaint.get().is_empty() {
+            let refresh_driver = self.refresh_driver.clone();
+            refresh_driver.tick_without_paint(self);
+        }
         if self.needs_repaint() {
             self.webview_renderers
                 .values()

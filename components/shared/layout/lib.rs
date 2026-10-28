@@ -415,6 +415,17 @@ pub trait Layout {
 
     fn query_accesskit_node(&self, node: TrustedNodeAddress) -> Option<accesskit::Node>;
 
+    fn query_animation_values(
+        &self,
+        node: TrustedNodeAddress,
+        blocks: &[style::properties::PropertyDeclarationBlock],
+        animations: DocumentAnimationSet,
+        animation_timeline_value: f64,
+    ) -> Option<(
+        style::properties::animated_properties::AnimationValueMap,
+        Vec<style::properties::animated_properties::AnimationValueMap>,
+    )>;
+
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -600,6 +611,7 @@ pub enum QueryMsg {
     OffsetParentQuery,
     ScrollParentQuery,
     ResolvedFontStyleQuery,
+    AnimationValuesQuery,
     /// A style query, with an optional [`PropertyId`], used to limit the phases
     /// of layout run before the query.
     ResolvedStyleQuery(PropertyId),

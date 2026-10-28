@@ -383,7 +383,7 @@ impl Paint {
     pub fn webviews_needing_repaint(&self) -> Vec<WebViewId> {
         self.painters
             .iter()
-            .flat_map(|painter| painter.borrow().webviews_needing_repaint())
+            .flat_map(|painter| painter.borrow_mut().webviews_needing_repaint())
             .collect()
     }
 

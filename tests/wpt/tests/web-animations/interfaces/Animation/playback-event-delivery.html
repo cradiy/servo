@@ -1,0 +1,100 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Animation playback event delivery</title>
+<link rel="help" href="https://drafts.csswg.org/web-animations-1/#animation-events">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+promise_test(async t => {
+  const animation = new Animation(new KeyframeEffect(null, null, 420));
+  const order = [];
+  const finished = animation.finished.then(() => order.push('promise'));
+  const event = new Promise(resolve => {
+    animation.onfinish = t.step_func(e => {
+      order.push('event');
+      assert_true(e instanceof AnimationPlaybackEvent);
+      assert_true(e.isTrusted);
+      assert_equals(e.target, animation);
+      assert_equals(e.currentTime, 420);
+      assert_false(e.bubbles);
+      assert_false(e.cancelable);
+      resolve();
+    });
+  });
+  animation.finish();
+  assert_array_equals(order, []);
+  await finished;
+  await new Promise(resolve => requestAnimationFrame(() => {
+    order.push('frame');
+    resolve();
+  }));
+  await event;
+  assert_array_equals(order, ['promise', 'event', 'frame']);
+}, 'Finish delivery follows its promise and precedes animation frame callbacks');
+
+promise_test(async t => {
+  const animation = new Animation(new KeyframeEffect(null, null, 610));
+  t.add_cleanup(() => { animation.oncancel = null; animation.cancel(); });
+  let calls = 0;
+  const cancelled = new Promise(resolve => {
+    animation.oncancel = t.step_func(e => {
+      calls++;
+      assert_equals(e.currentTime, null);
+      assert_equals(animation.playState, 'running');
+      resolve();
+    });
+  });
+  animation.play();
+  animation.cancel();
+  animation.cancel();
+  animation.play();
+  await cancelled;
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  assert_equals(calls, 1);
+}, 'A queued cancel event survives replay and redundant idle cancellation adds no event');
+
+promise_test(async t => {
+  const animation = new Animation(new KeyframeEffect(null, null, 360), null);
+  let synchronous = true;
+  const event = new Promise(resolve => {
+    animation.onfinish = t.step_func(e => {
+      assert_false(synchronous);
+      assert_equals(e.timelineTime, null);
+      assert_equals(e.currentTime, 360);
+      resolve();
+    });
+  });
+  animation.finish();
+  synchronous = false;
+  await event;
+}, 'An animation without a timeline delivers finish asynchronously');
+
+promise_test(async t => {
+  const first = new Animation();
+  const second = new Animation();
+  const order = [];
+  const done = Promise.all([first, second].map((animation, index) =>
+    new Promise(resolve => {
+      animation.onfinish = () => { order.push(index); resolve(); };
+    })));
+  second.finish();
+  first.finish();
+  await done;
+  assert_array_equals(order, [0, 1]);
+}, 'Playback events with unresolved scheduled times follow animation composite order');
+promise_test(async t => {
+  const animation = new Animation(new KeyframeEffect(null, null, 80));
+  t.add_cleanup(() => animation.cancel());
+  const event = new Promise(resolve => {
+    animation.onfinish = t.step_func(e => {
+      assert_equals(e.currentTime, 80);
+      assert_equals(animation.playState, 'finished');
+      resolve();
+    });
+  });
+  animation.play();
+  await animation.ready;
+  await animation.finished;
+  await event;
+}, 'Natural playback completion delivers both the finished promise and finish event');
+</script>

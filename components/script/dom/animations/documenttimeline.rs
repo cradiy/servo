@@ -67,6 +67,10 @@ impl DocumentTimeline {
         )
     }
 
+    pub(crate) fn to_origin_relative_time(&self, time: f64) -> f64 {
+        time + self.origin_offset.as_seconds_f64() * 1000.0
+    }
+
     /// Updates the value of the `AnimationTimeline` to the current clock time.
     pub(crate) fn update(&self, window: &Window) {
         let duration_since_time_origin =

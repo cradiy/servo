@@ -4,6 +4,7 @@
 
 use cssparser::Parser;
 use dom_struct::dom_struct;
+use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::AnimationEffectBinding::{
     AnimationEffectMethods, ComputedEffectTiming, EffectTiming, FillMode, OptionalEffectTiming,
@@ -13,7 +14,7 @@ use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::num::Finite;
 use script_bindings::reflector::Reflector;
-use script_bindings::root::Dom;
+use script_bindings::root::{Dom, DomRoot};
 use script_bindings::str::DOMString;
 use style::parser::Parse;
 use style::stylesheets::CssRuleType;
@@ -23,12 +24,15 @@ use style_traits::{ParsingMode, ToCss};
 
 use crate::css::css::parser_context_for_document;
 use crate::dom::Window;
+use crate::dom::animation::Animation;
 use crate::dom::bindings::codegen::UnionTypes::UnrestrictedDoubleOrString;
+use crate::dom::bindings::root::MutNullableDom;
 
 /// <https://drafts.csswg.org/web-animations-1/#animationeffect>
 #[dom_struct]
 pub(crate) struct AnimationEffect {
     reflector: Reflector,
+    associated_animation: MutNullableDom<Animation>,
 
     /// The window that this `AnimationEffect` was constructed in.
     window: Dom<Window>,
@@ -68,6 +72,7 @@ impl AnimationEffect {
     pub(crate) fn new_inherited(window: &Window) -> Self {
         Self {
             reflector: Reflector::new(),
+            associated_animation: Default::default(),
             window: Dom::from_ref(window),
 
             // The default values of the timing properties specified here don't matter.
@@ -84,6 +89,92 @@ impl AnimationEffect {
                 easing_function: TimingFunction::Keyword(TimingKeyword::Linear),
             }),
         }
+    }
+
+    pub(crate) fn associated_animation(&self) -> Option<DomRoot<Animation>> {
+        self.associated_animation.get()
+    }
+
+    pub(crate) fn set_associated_animation(&self, animation: Option<&Animation>) {
+        self.associated_animation.set(animation);
+    }
+
+    pub(crate) fn active_duration(&self) -> f64 {
+        let timing = self.specified_timing_properties.borrow();
+        let duration = timing.iteration_duration.computed_value();
+        if duration == 0.0 || timing.iteration_count == 0.0 {
+            0.0
+        } else {
+            duration * timing.iteration_count
+        }
+    }
+
+    pub(crate) fn end_time(&self) -> f64 {
+        let timing = self.specified_timing_properties.borrow();
+        (*timing.start_delay + self.active_duration() + *timing.end_delay).max(0.0)
+    }
+
+    pub(crate) fn progress_at(&self, local_time: Option<f64>) -> (Option<f64>, Option<f64>) {
+        let Some(time) = local_time else {
+            return (None, None);
+        };
+        let timing = self.specified_timing_properties.borrow();
+        let duration = timing.iteration_duration.computed_value();
+        let active = self.active_duration();
+        let end = self.end_time();
+        let delay = *timing.start_delay;
+        let before = time < delay.min(end).max(0.0);
+        let after = !before && time >= (delay + active).min(end).max(0.0);
+        if (before && !matches!(timing.fill_mode, FillMode::Backwards | FillMode::Both))
+            || (after && !matches!(timing.fill_mode, FillMode::Forwards | FillMode::Both))
+        {
+            return (None, None);
+        }
+        let active_time = if before {
+            (time - delay).max(0.0)
+        } else if after {
+            (end - delay).max(0.0).min(active)
+        } else {
+            time - delay
+        };
+        let overall = *timing.iteration_start
+            + if duration == 0.0 {
+                if before { 0.0 } else { timing.iteration_count }
+            } else {
+                active_time / duration
+            };
+        let mut progress = if overall.is_infinite() {
+            timing.iteration_start.fract()
+        } else {
+            overall.fract()
+        };
+        if progress == 0.0 && after && timing.iteration_count != 0.0 && active_time == active {
+            progress = 1.0;
+        }
+        let iteration = if overall.is_infinite() {
+            f64::INFINITY
+        } else {
+            overall.floor() - if progress == 1.0 { 1.0 } else { 0.0 }
+        };
+        let reverse = match timing.playback_direction {
+            PlaybackDirection::Normal => false,
+            PlaybackDirection::Reverse => true,
+            PlaybackDirection::Alternate => iteration % 2.0 == 1.0,
+            PlaybackDirection::Alternate_reverse => iteration % 2.0 != 1.0,
+        };
+        if reverse {
+            progress = 1.0 - progress;
+        }
+        let before_flag = if before != reverse {
+            style::values::generics::easing::BeforeFlag::Set
+        } else {
+            style::values::generics::easing::BeforeFlag::Unset
+        };
+        let progress = timing
+            .easing_function
+            .to_computed_value_without_context()
+            .calculate_output(progress, before_flag, 1e-7);
+        (Some(progress), Some(iteration))
     }
 
     pub(crate) fn window(&self) -> &Window {
@@ -262,6 +353,23 @@ impl AnimationEffectMethods<crate::DomTypeHolder> for AnimationEffect {
             specified_timing_properties.fill_mode
         };
 
+        // A zero iteration duration or count produces zero active duration,
+        // including when the other operand is infinite.
+        let active_duration =
+            if computed_duration == 0.0 || specified_timing_properties.iteration_count == 0.0 {
+                0.0
+            } else {
+                computed_duration * specified_timing_properties.iteration_count
+            };
+        let end_time = (*specified_timing_properties.start_delay
+            + active_duration
+            + *specified_timing_properties.end_delay)
+            .max(0.0);
+
+        let local_time = self
+            .associated_animation()
+            .and_then(|animation| animation.current_time());
+        let (progress, iteration) = self.progress_at(local_time);
         ComputedEffectTiming {
             parent: EffectTiming {
                 delay: specified_timing_properties.start_delay,
@@ -276,20 +384,27 @@ impl AnimationEffectMethods<crate::DomTypeHolder> for AnimationEffect {
                 iterationStart: specified_timing_properties.iteration_start,
                 iterations: specified_timing_properties.iteration_count,
             },
-            // FIXME: These are just placeholder values
-            endTime: None,
-            activeDuration: None,
-            localTime: None,
-            progress: None,
-            currentIteration: None,
+            endTime: Some(end_time),
+            activeDuration: Some(active_duration),
+            localTime: Some(local_time.and_then(Finite::new)),
+            progress: Some(progress.and_then(Finite::new)),
+            currentIteration: Some(iteration),
         }
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-animationeffect-updatetiming>
-    fn UpdateTiming(&self, timing: &OptionalEffectTiming) -> Fallible<()> {
+    fn UpdateTiming(&self, cx: &mut JSContext, timing: &OptionalEffectTiming) -> Fallible<()> {
         // > Updates the specified timing properties of this animation effect by performing the procedure
         // > to update the timing properties of an animation effect passing the timing parameter as input.
-        self.update_the_timing_properties(timing)
+        let animation = self.associated_animation();
+        let previous_time = animation
+            .as_ref()
+            .and_then(|animation| animation.current_time());
+        self.update_the_timing_properties(timing)?;
+        if let Some(animation) = animation {
+            animation.timing_changed(cx, previous_time);
+        }
+        Ok(())
     }
 }
 

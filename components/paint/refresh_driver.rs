@@ -74,6 +74,12 @@ impl BaseRefreshDriver {
         }
     }
 
+    pub(crate) fn tick_without_paint(&self, painter: &mut Painter) {
+        if !self.observers.borrow().is_empty() && !self.waiting_for_frame.load(Ordering::Relaxed) {
+            self.notify_will_paint(painter);
+        }
+    }
+
     fn observe_next_frame(&self) {
         self.waiting_for_frame.store(true, Ordering::Relaxed);
 

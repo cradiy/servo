@@ -4760,14 +4760,20 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             if let UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(options) =
                 &options
             {
-                options.timeline.clone().flatten()
+                options.timeline.clone()
             } else {
                 None
             };
         let timeline = timeline.unwrap_or_else(|| {
             let document = self.owner_document();
-            DomRoot::upcast(document.Timeline())
+            Some(DomRoot::upcast(document.Timeline()))
         });
+        let id = match &options {
+            UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(options) => {
+                options.id.clone()
+            },
+            _ => DOMString::new(),
+        };
 
         // Step 2. Construct a new KeyframeEffect object effect in the relevant Realm
         // of target by using the same procedure as the KeyframeEffect(target, keyframes, options)
@@ -4784,8 +4790,14 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
                 UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(options.parent)
             },
         };
-        let effect =
-            KeyframeEffect::Constructor(cx, &window, None, Some(target), keyframes, parent_options)?;
+        let effect = KeyframeEffect::Constructor(
+            cx,
+            &window,
+            None,
+            Some(target),
+            keyframes,
+            parent_options,
+        )?;
 
         // Step 4. Construct a new Animation object, animation, in the relevant Realm of target by using
         // the same procedure as the Animation() constructor, passing effect and timeline as arguments of
@@ -4795,13 +4807,12 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             &window,
             None,
             Some(effect.upcast()),
-            Some(Some(&timeline)),
+            Some(timeline.as_deref()),
         );
 
-        // TODO: Step 5. If options is a KeyframeAnimationOptions object, assign the value of the id member of options
-        // to animation’s id attribute.
+        animation.SetId(id);
 
-        // TODO: Step 6. Run the procedure to play an animation for animation with the auto-rewind flag set to true.
+        animation.Play(cx)?;
 
         // Step 7. Return animation.
         Ok(animation)

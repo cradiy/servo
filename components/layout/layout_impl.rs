@@ -564,6 +564,90 @@ impl Layout for LayoutThread {
     }
 
     #[servo_tracing::instrument(skip_all)]
+    fn query_animation_values(
+        &self,
+        node: TrustedNodeAddress,
+        blocks: &[style::properties::PropertyDeclarationBlock],
+        animations: DocumentAnimationSet,
+        animation_timeline_value: f64,
+    ) -> Option<(
+        style::properties::animated_properties::AnimationValueMap,
+        Vec<style::properties::animated_properties::AnimationValueMap>,
+    )> {
+        use style::context::{CascadeInputs, StyleContext, ThreadLocalStyleContext};
+        use style::properties::animated_properties::{AnimationValue, AnimationValueMap};
+        use style::style_resolver::{PseudoElementResolution, StyleResolverForElement};
+        use style::stylist::RuleInclusion;
+        with_layout_state(|| {
+            let node = unsafe { ServoLayoutNode::new(&node) };
+            let element = node.as_element()?;
+            let document = unsafe { node.dangerous_style_node() }.owner_doc();
+            let shared_locks = document.shared_style_locks();
+            let shared_lock = &shared_locks.author;
+            let guards = StylesheetGuards {
+                author: &shared_lock.read(),
+                ua_or_user: &shared_locks.ua_or_user.read(),
+            };
+            let snapshots = SnapshotMap::new();
+            let shared = self.build_shared_style_context(
+                guards,
+                &snapshots,
+                animation_timeline_value,
+                &animations,
+                TraversalFlags::empty(),
+            );
+            if element.style_data().is_none() {
+                return None;
+            }
+            let style = element.style(&shared);
+            let mut inputs = CascadeInputs::new_from_style(&style);
+            inputs.rules = inputs
+                .rules
+                .map(|rules| shared.stylist.rule_tree().remove_animation_rules(&rules));
+            inputs.visited_rules = inputs
+                .visited_rules
+                .map(|rules| shared.stylist.rule_tree().remove_animation_rules(&rules));
+            let dangerous = unsafe { element.dangerous_style_element() };
+            let mut local = ThreadLocalStyleContext::new();
+            local.current_dom_depth = dangerous.as_node().depth();
+            let mut context = StyleContext {
+                shared: &shared,
+                thread_local: &mut local,
+            };
+            let base = StyleResolverForElement::new(
+                dangerous,
+                &mut context,
+                RuleInclusion::All,
+                PseudoElementResolution::IfApplicable,
+            )
+            .cascade_style_and_visited_with_default_parents(inputs)
+            .0;
+            let mut underlying = AnimationValueMap::default();
+            let mut computed = Vec::with_capacity(blocks.len());
+            for block in blocks {
+                let values = shared
+                    .stylist
+                    .compute_for_declarations::<ServoDangerousStyleElement>(
+                        &shared.guards,
+                        &base,
+                        ServoArc::new(shared_lock.wrap(block.clone())),
+                    );
+                let mut frame = AnimationValueMap::default();
+                for declaration in block.declarations() {
+                    let id = declaration.id();
+                    if let Some(value) = AnimationValue::from_computed_values(id, &base) {
+                        underlying.insert(id.to_owned(), value);
+                    }
+                    if let Some(value) = AnimationValue::from_computed_values(id, &values) {
+                        frame.insert(id.to_owned(), value);
+                    }
+                }
+                computed.push(frame);
+            }
+            Some((underlying, computed))
+        })
+    }
+
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -2130,6 +2214,7 @@ impl ReflowPhases {
                 QueryMsg::InnerWindowDimensionsQuery |
                 QueryMsg::PaddingQuery |
                 QueryMsg::ResolvedFontStyleQuery |
+                QueryMsg::AnimationValuesQuery |
                 QueryMsg::ScrollParentQuery |
                 QueryMsg::StyleQuery => Self::empty(),
             },

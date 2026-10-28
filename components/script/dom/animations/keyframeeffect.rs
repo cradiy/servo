@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::Cell;
 use std::ffi::CString;
 use std::ops::ControlFlow;
 use std::ptr::NonNull;
@@ -25,11 +26,14 @@ use script_bindings::codegen::GenericBindings::AnimationEffectBinding::{
     EffectTiming, OptionalEffectTiming,
 };
 use script_bindings::codegen::GenericBindings::KeyframeEffectBinding::{
-    BaseKeyframe, CompositeOperationOrAuto,
+    BaseKeyframe, BasePropertyIndexedKeyframe, CompositeOperation, CompositeOperationOrAuto,
 };
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrKeyframeEffectOptions;
-use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrString;
+use script_bindings::codegen::GenericUnionTypes::{
+    CompositeOperationOrAutoOrCompositeOperationOrAutoSequence as CompositeKeyframeValues,
+    DoubleOrDoubleOrNullSequence, StringOrStringSequence, UnrestrictedDoubleOrString,
+};
 use script_bindings::conversions::StringificationBehavior;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::inheritance::Castable;
@@ -44,7 +48,7 @@ use style::parser::Parse;
 use style::parser::ParserContext;
 use style::properties::generated::PropertyDeclaration;
 use style::properties::{
-    Importance, LonghandId, NonCustomPropertyId, PropertyDeclarationBlock, PropertyId,
+    Importance, NonCustomPropertyId, PropertyDeclarationBlock, PropertyId,
     SourcePropertyDeclaration,
 };
 use style::stylesheets::CssRuleType;
@@ -73,16 +77,132 @@ pub(crate) struct KeyframeEffect {
     // https://drafts.csswg.org/web-animations-1/#effect-target-target-pseudo-selector
     // https://drafts.csswg.org/web-animations-1/#keyframe-effect-effect-target.
     target_element: MutNullableDom<Element>,
+    composite: Cell<CompositeOperation>,
 
     /// <https://drafts.csswg.org/web-animations-1/#keyframe>
     keyframes: DomRefCell<Vec<Keyframe>>,
 }
 
 impl KeyframeEffect {
+    pub(crate) fn target(&self) -> Option<DomRoot<Element>> {
+        self.target_element.get()
+    }
+
+    pub(crate) fn sample_values(
+        &self,
+        target: &Element,
+        progress: f64,
+    ) -> style::properties::animated_properties::AnimationValueMap {
+        use crate::dom::node::{Node, NodeTraits};
+        use style::properties::animated_properties::{AnimationValue, AnimationValueMap};
+        use style::values::animated::{Animate, Procedure};
+        let (blocks, offsets, easings) = {
+            let frames = self.keyframes.borrow();
+            let blocks = frames
+                .iter()
+                .map(|frame| {
+                    let mut block = PropertyDeclarationBlock::new();
+                    for declaration in &frame.declarations {
+                        for value in declaration.block.declarations() {
+                            block.push(value.clone(), Importance::Normal);
+                        }
+                    }
+                    block
+                })
+                .collect::<Vec<_>>();
+            (
+                blocks,
+                computed_offsets(&frames),
+                frames
+                    .iter()
+                    .map(|frame| frame.easing_function.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        if blocks.is_empty() {
+            return AnimationValueMap::default();
+        }
+        let window = target.owner_window();
+        let Some((underlying, computed)) =
+            window.animation_values_query(target.upcast::<Node>(), &blocks)
+        else {
+            return AnimationValueMap::default();
+        };
+        let document = window.Document();
+        let url = document.url().into_url().into();
+        let context =
+            parser_context_for_document(&document, CssRuleType::Style, ParsingMode::DEFAULT, &url);
+        let mut result = AnimationValueMap::default();
+        for (property, base) in underlying {
+            let mut track: Vec<(f64, AnimationValue, usize)> = computed
+                .iter()
+                .enumerate()
+                .filter_map(|(index, values)| {
+                    values
+                        .get(&property)
+                        .map(|value| (offsets[index], value.clone(), index))
+                })
+                .collect();
+            if track.is_empty() {
+                continue;
+            }
+            if track[0].0 > 0.0 {
+                track.insert(0, (0.0, base.clone(), usize::MAX));
+            }
+            if track.last().unwrap().0 < 1.0 {
+                track.push((1.0, base.clone(), usize::MAX));
+            }
+            if track.len() == 1 {
+                result.insert(property, track[0].1.clone());
+                continue;
+            }
+            let right = track
+                .iter()
+                .position(|frame| frame.0 > progress)
+                .unwrap_or(track.len() - 1)
+                .max(1);
+            let left = right - 1;
+            let span = track[right].0 - track[left].0;
+            let mut portion = if span == 0.0 {
+                1.0
+            } else {
+                (progress - track[left].0) / span
+            };
+            if let Some(easing) = easings.get(track[left].2) {
+                let source = easing.str();
+                if let Ok(easing) = Parser::new(&source)
+                    .parse_entirely(|parser| TimingFunction::parse(&context, parser))
+                {
+                    portion = easing.to_computed_value_without_context().calculate_output(
+                        portion,
+                        style::values::generics::easing::BeforeFlag::Unset,
+                        1e-7,
+                    );
+                }
+            }
+            let value = track[left]
+                .1
+                .animate(
+                    &track[right].1,
+                    Procedure::Interpolate { progress: portion },
+                )
+                .unwrap_or_else(|_| {
+                    if portion < 0.5 {
+                        track[left].1.clone()
+                    } else {
+                        track[right].1.clone()
+                    }
+                });
+            result.insert(property, value);
+        }
+        result
+    }
+
     pub(crate) fn new_inherited(window: &Window) -> Self {
         Self {
             animationeffect: AnimationEffect::new_inherited(window),
             target_element: Default::default(),
+            composite: Cell::new(CompositeOperation::Replace),
             keyframes: Default::default(),
         }
     }
@@ -94,10 +214,6 @@ impl KeyframeEffect {
     ) -> DomRoot<Self> {
         reflect_dom_object_with_proto(cx, Box::new(Self::new_inherited(window)), window, proto)
     }
-
-    pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<Self> {
-        Self::new_with_proto(cx, window, None)
-    }
 }
 
 impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
@@ -105,13 +221,13 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
     fn Constructor(
         cx: &mut JSContext,
         window: &Window,
-        _: Option<HandleObject>,
+        proto: Option<HandleObject>,
         target: Option<&Element>,
         keyframes: *mut JSObject,
         options: UnrestrictedDoubleOrKeyframeEffectOptions,
     ) -> Fallible<DomRoot<KeyframeEffect>> {
         // Step 1. Create a new KeyframeEffect object, effect.
-        let effect = KeyframeEffect::new(cx, window);
+        let effect = KeyframeEffect::new_with_proto(cx, window, proto);
 
         // Step 2. Set the target element of effect to target.
         effect.target_element.set(target);
@@ -127,6 +243,7 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                 }
             },
             UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(options) => {
+                effect.composite.set(options.composite);
                 options.parent
             },
         };
@@ -147,18 +264,34 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                 easing: Some(timing.easing),
             })?;
 
-        // TODO: Step 6. If options is a KeyframeEffectOptions object, assign the composite property of effect
-        // to the corresponding value from options.
-        //
-        // When assigning this property, the error-handling defined for the corresponding setter on the
-        //  KeyframeEffect interface is applied. If the setter requires an exception to be thrown for the value
-        //  specified by options, this procedure must throw the same exception and abort all further steps.
-
         // Step 7. Initialize the set of keyframes by performing the procedure defined for setKeyframes()
         // passing keyframes as the input.
         effect.SetKeyframes(cx, keyframes)?;
 
         Ok(effect)
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-target>
+    fn GetTarget(&self) -> Option<DomRoot<Element>> {
+        self.target_element.get()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-target>
+    fn SetTarget(&self, cx: &mut JSContext, target: Option<&Element>) {
+        self.target_element.set(target);
+        if let Some(animation) = self.animationeffect.associated_animation() {
+            animation.effect_changed(cx);
+        }
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-composite>
+    fn Composite(&self) -> CompositeOperation {
+        self.composite.get()
+    }
+
+    /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-composite>
+    fn SetComposite(&self, composite: CompositeOperation) {
+        self.composite.set(composite);
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-getkeyframes>
@@ -269,6 +402,9 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
         let document = self.upcast::<AnimationEffect>().window().Document();
         let keyframes = process_a_keyframes_argument(cx, &document, keyframes)?;
         *self.keyframes.safe_borrow_mut(cx.no_gc()) = keyframes;
+        if let Some(animation) = self.animationeffect.associated_animation() {
+            animation.effect_changed(cx);
+        }
         Ok(())
     }
 }
@@ -314,11 +450,10 @@ fn process_a_keyframes_argument(
 
         Ok(ControlFlow::Continue(()))
     });
-    let keyframes = match result {
+    let mut keyframes = match result {
         Ok(()) => Ok(keyframes),
         Err(ForOfIterationFailure::ValueIsNotIterable) => {
-            // TODO: Step 5, Otherwise:
-            Err(Error::Operation(None))
+            process_property_indexed_keyframes(cx, document, iterable.handle())
         },
         Err(ForOfIterationFailure::JSFailed) => Err(Error::JSFailed),
         Err(ForOfIterationFailure::Other(error)) => Err(error),
@@ -331,7 +466,7 @@ fn process_a_keyframes_argument(
         ParsingMode::DEFAULT,
         &urlextradata,
     );
-    for keyframe in &keyframes {
+    for keyframe in &mut keyframes {
         if let Some(offset) = keyframe.offset {
             if *offset < previous_offset || *offset > 1.0 {
                 return Err(Error::Type(
@@ -340,12 +475,113 @@ fn process_a_keyframes_argument(
             }
             previous_offset = *offset;
         }
-        let easing = keyframe.easing_function.str();
-        Parser::new(&easing)
-            .parse_entirely(|parser| TimingFunction::parse(&context, parser))
-            .map_err(|_| Error::Type(c"Invalid keyframe easing".to_owned()))?;
+        let normalized = {
+            let easing = keyframe.easing_function.str();
+            Parser::new(&easing)
+                .parse_entirely(|parser| TimingFunction::parse(&context, parser))
+                .map_err(|_| Error::Type(c"Invalid keyframe easing".to_owned()))?
+                .to_css_string()
+                .into()
+        };
+        keyframe.easing_function = normalized;
     }
     Ok(keyframes)
+}
+
+/// <https://drafts.csswg.org/web-animations-1/#processing-a-keyframes-argument>
+fn process_property_indexed_keyframes(
+    cx: &mut JSContext,
+    document: &Document,
+    input: HandleValue,
+) -> Fallible<Vec<Keyframe>> {
+    let metadata = match BasePropertyIndexedKeyframe::from_jsval(cx, input, ()) {
+        Ok(ConversionResult::Success(value)) => value,
+        Ok(ConversionResult::Failure(message)) => return Err(Error::Type(message.into_owned())),
+        Err(_) => return Err(Error::JSFailed),
+    };
+    rooted!(&in(cx) let object = input.to_object());
+    let properties = get_property_values(cx, object.handle(), true)?;
+    let urlextradata = document.url().into_url().into();
+    let mut context = parser_context_for_document(
+        document,
+        CssRuleType::Style,
+        ParsingMode::DEFAULT,
+        &urlextradata,
+    );
+    let mut spaced_frames = Vec::new();
+    for (property, values) in properties {
+        let length = values.len();
+        for (index, value) in values.into_iter().enumerate() {
+            let offset = if length == 1 {
+                1.0
+            } else {
+                index as f64 / (length - 1) as f64
+            };
+            let declaration =
+                parse_single_property_declaration(&property, &value.str(), &mut context);
+            spaced_frames.push((offset, declaration));
+        }
+    }
+    spaced_frames.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut frames: Vec<Keyframe> = Vec::new();
+    let mut previous_offset = None;
+    for (offset, declaration) in spaced_frames {
+        if previous_offset != Some(offset) {
+            frames.push(Keyframe {
+                offset: None,
+                easing_function: DOMString::from_static("linear"),
+                composite: CompositeOperationOrAuto::Auto,
+                declarations: Vec::new(),
+            });
+            previous_offset = Some(offset);
+        }
+        if let Some(declaration) = declaration {
+            frames.last_mut().unwrap().declarations.push(declaration);
+        }
+    }
+    let offsets = match metadata.offset.flatten() {
+        None => vec![None],
+        Some(DoubleOrDoubleOrNullSequence::Double(value)) => vec![Some(value)],
+        Some(DoubleOrDoubleOrNullSequence::DoubleOrNullSequence(values)) => values,
+    };
+    for (frame, offset) in frames.iter_mut().zip(offsets) {
+        frame.offset = offset;
+    }
+    let mut easings = match metadata
+        .easing
+        .unwrap_or(StringOrStringSequence::StringSequence(Vec::new()))
+    {
+        StringOrStringSequence::String(value) => vec![value],
+        StringOrStringSequence::StringSequence(values) => values,
+    };
+    if easings.is_empty() {
+        easings.push(DOMString::from_static("linear"));
+    }
+    // Excess easing entries must be validated, even when there are no frames.
+    for easing in &mut easings {
+        let normalized = {
+            let source = easing.str();
+            Parser::new(&source)
+                .parse_entirely(|parser| TimingFunction::parse(&context, parser))
+                .map_err(|_| Error::Type(c"Invalid keyframe easing".to_owned()))?
+                .to_css_string()
+                .into()
+        };
+        *easing = normalized;
+    }
+    let composites = match metadata.composite.unwrap_or(
+        CompositeKeyframeValues::CompositeOperationOrAutoSequence(Vec::new()),
+    ) {
+        CompositeKeyframeValues::CompositeOperationOrAuto(value) => vec![value],
+        CompositeKeyframeValues::CompositeOperationOrAutoSequence(values) => values,
+    };
+    for (index, frame) in frames.iter_mut().enumerate() {
+        frame.easing_function = easings[index % easings.len()].clone();
+        if !composites.is_empty() {
+            frame.composite = composites[index % composites.len()];
+        }
+    }
+    Ok(frames)
 }
 
 fn computed_offsets(keyframes: &[Keyframe]) -> Vec<f64> {
@@ -399,30 +635,6 @@ fn process_a_keyframe_like_object(
     document: &Document,
     keyframe_input: HandleValue,
 ) -> Fallible<Keyframe> {
-    // Step 1. Run the procedure to convert an ECMAScript value to a dictionary type [WEBIDL] with keyframe input
-    // as the ECMAScript value, and the dictionary type depending on the value of the allow lists flag as follows:
-    // If allow lists is true,
-    // Use the following dictionary type:
-    //
-    // dictionary BasePropertyIndexedKeyframe {
-    //   (double? or sequence<double?>)                         offset = [];
-    //   (DOMString or sequence<DOMString>)                     easing = [];
-    //   (CompositeOperationOrAuto or sequence<CompositeOperationOrAuto>) composite = [];
-    // };
-    //
-    // Otherwise,
-    //     Use the following dictionary type:
-    //
-    //     dictionary BaseKeyframe {
-    //       double?                  offset = null;
-    //       DOMString                easing = "linear";
-    //       CompositeOperationOrAuto composite = "auto";
-    //     };
-    //
-    // Store the result of this procedure as keyframe output.
-    //
-    // Note: 'allow lists' is currently never true.
-    // Use the following dictionary type:
     let Ok(keyframe_output) = BaseKeyframe::from_jsval(cx, keyframe_input, ()) else {
         return Err(Error::JSFailed);
     };
@@ -456,113 +668,91 @@ fn process_a_keyframe_like_object(
     );
     rooted!(&in(cx) let object = keyframe_input.to_object());
 
-    // Steps 2 - 6 are in get_property_declarations
-    keyframe_output.declarations =
-        get_property_declarations(cx, object.handle(), &mut parser_context)?;
+    // Read properties before parsing their CSS values.
+    keyframe_output.declarations = get_property_values(cx, object.handle(), false)?
+        .into_iter()
+        .filter_map(|(property, values)| {
+            parse_single_property_declaration(&property, &values[0].str(), &mut parser_context)
+        })
+        .collect();
 
     // Step 7. Return keyframe output.
     Ok(keyframe_output)
 }
 
-/// Implements Step 2-6 of  <https://drafts.csswg.org/web-animations-1/#process-a-keyframe-like-object>.
+/// Reads animatable own properties in Unicode codepoint order.
 #[expect(unsafe_code)]
-fn get_property_declarations(
+fn get_property_values(
     cx: &mut JSContext,
     object: HandleObject,
-    parser_context: &mut ParserContext<'_>,
-) -> Fallible<Vec<KeyframePropertyDeclaration>> {
-    // The spec tells us to iterate over all animatable properties and see if they're defined
-    // on the object. Instead we can iterate over the own properties of the object and see
-    // if they're animated properties, that's easier.
+    allow_lists: bool,
+) -> Fallible<Vec<(PropertyId, Vec<DOMString>)>> {
     let mut ids = IdVector::new(cx);
     if !GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) {
         return Err(Error::JSFailed);
     }
-
-    let mut declarations = Vec::with_capacity(ids.len());
-    for id in ids.iter() {
+    let mut properties = Vec::new();
+    for (index, id) in ids.iter().enumerate() {
         rooted!(&in(cx) let id = *id);
-
-        // See if the id for the current property on the object represents a animatable CSS property.
         if !id.is_string() {
             continue;
         }
-        rooted!(&in(cx) let mut key_value = UndefinedValue());
-        if !JS_IdToValue(cx, id.handle().get(), key_value.handle_mut()) {
-            continue;
+        rooted!(&in(cx) let mut key = UndefinedValue());
+        if !JS_IdToValue(cx, id.handle().get(), key.handle_mut()) {
+            return Err(Error::JSFailed);
         }
-        rooted!(&in(cx) let js_string = key_value.to_string());
-        let Some(js_string) = NonNull::new(js_string.get()) else {
+        rooted!(&in(cx) let string = key.to_string());
+        let Some(string) = NonNull::new(string.get()) else {
             continue;
         };
-        let property_name = unsafe { jsstr_to_string(cx, js_string) };
-
-        let Some(property_id) = lookup_css_property_by_idl_attribute_name(&property_name) else {
-            continue;
-        };
-        debug_assert!(property_id.is_animatable());
-
-        // Step 6.1 Let raw value be the result of calling the [[Get]] internal method on keyframe input,
-        // with property name as the property key and keyframe input as the receiver.
-        // Step 6.2 Check the completion record of raw value.
-        rooted!(&in(cx) let mut property_value = UndefinedValue());
+        let name = unsafe { jsstr_to_string(cx, string) };
+        if let Some(property) = lookup_css_property_by_idl_attribute_name(&name) {
+            properties.push((name, index, property));
+        }
+    }
+    properties.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut result = Vec::with_capacity(properties.len());
+    for (_, index, property) in properties {
+        rooted!(&in(cx) let id = ids[index]);
+        rooted!(&in(cx) let mut value = UndefinedValue());
         if !unsafe {
             JS_GetPropertyById(
                 cx.raw_cx(),
                 object.into_handle(),
                 id.handle().into_handle(),
-                property_value.handle_mut().into_handle_mut(),
+                value.handle_mut().into_handle_mut(),
             )
         } {
             return Err(Error::JSFailed);
         }
-
-        // Step 6.3 Convert raw value to a DOMString or to a sequence of DOMStrings property values as follows:
-        // If allow lists is true, [..] (Note: We don't implement "allow lists")
-        // Otherwise,
-        // Let property values be the result of converting raw value to a DOMString using the procedure
-        // for converting an ECMAScript value to a DOMString [WEBIDL].
-        let property_value = match DOMString::from_jsval(
-            cx,
-            property_value.handle(),
-            StringificationBehavior::Default,
-        ) {
-            Ok(ConversionResult::Success(property_value)) => property_value,
-            Ok(ConversionResult::Failure(error_message)) => {
-                return Err(Error::Operation(
-                    error_message
-                        .to_str()
-                        .ok()
-                        .map(|message| message.to_owned()),
-                ));
-            },
-            Err(_) => return Err(Error::JSFailed),
+        let values = if allow_lists {
+            match StringOrStringSequence::from_jsval(cx, value.handle(), ()) {
+                Ok(ConversionResult::Success(StringOrStringSequence::String(value))) => vec![value],
+                Ok(ConversionResult::Success(StringOrStringSequence::StringSequence(values))) => {
+                    values
+                },
+                Ok(ConversionResult::Failure(message)) => {
+                    return Err(Error::Type(message.into_owned()));
+                },
+                Err(_) => return Err(Error::JSFailed),
+            }
+        } else {
+            match DOMString::from_jsval(cx, value.handle(), StringificationBehavior::Default) {
+                Ok(ConversionResult::Success(value)) => vec![value],
+                Ok(ConversionResult::Failure(message)) => {
+                    return Err(Error::Type(message.into_owned()));
+                },
+                Err(_) => return Err(Error::JSFailed),
+            }
         };
-
-        // Step 6.4 Calculate the normalized property name as the result of applying the IDL attribute name
-        // to animation property name algorithm to property name.
-        // Note: Due to the way our implementation differs from the spec (refer to the comment at
-        // the top of this function), we already have the normalized property name.
-
-        // Parse the property value as a value for the given animatable CSS property.
-        // The specification continues to treat the value as a plain string, but there's not much point.
-        let Some(declaration) =
-            parse_single_property_declaration(property_id, &property_value.str(), parser_context)
-        else {
-            continue;
-        };
-
-        // Step 6.5 Add a property to keyframe output with normalized property name as the property name,
-        // and property values as the property value.
-        declarations.push(declaration);
+        result.push((property, values));
     }
-
-    Ok(declarations)
+    Ok(result)
 }
 
 /// Parses `input` as a value for `property`, returning `None` on failure.
 fn parse_single_property_declaration(
-    property: NonCustomPropertyId,
+    property: &PropertyId,
     input: &str,
     parser_context: &mut ParserContext<'_>,
 ) -> Option<KeyframePropertyDeclaration> {
@@ -574,7 +764,7 @@ fn parse_single_property_declaration(
         .parse_entirely(|parser| {
             PropertyDeclaration::parse_into(
                 &mut declaration,
-                PropertyId::NonCustom(property),
+                property.clone(),
                 parser_context,
                 parser,
             )
@@ -585,22 +775,16 @@ fn parse_single_property_declaration(
     block.extend(declaration.drain(), Importance::Normal);
 
     Some(KeyframePropertyDeclaration {
-        property_id: PropertyId::NonCustom(property),
+        property_id: property.clone(),
         block,
     })
 }
 
 /// This is the inverse of <https://drafts.csswg.org/web-animations-1/#animation-property-name-to-idl-attribute-name>.
-fn lookup_css_property_by_idl_attribute_name(attribute_name: &str) -> Option<NonCustomPropertyId> {
-    // TODO: Step 1. If property follows the <custom-property-name> production, return property.
-
-    // Step 2. If property refers to the CSS float property, return the string "cssFloat".
-    if attribute_name == "cssFloat" {
-        return Some(LonghandId::Float.into());
+fn lookup_css_property_by_idl_attribute_name(attribute_name: &str) -> Option<PropertyId> {
+    if attribute_name.starts_with("--") {
+        return PropertyId::parse_enabled_for_all_content(attribute_name).ok();
     }
-
-    // Step 3. If property refers to the CSS offset property, return the string "cssOffset".
-    // NOTE: "offset" is not supported yet.
 
     // Step 4. Otherwise, return the result of applying the CSS property to IDL attribute algorithm
     // [CSSOM] to property.
@@ -626,6 +810,7 @@ fn lookup_css_property_by_idl_attribute_name(attribute_name: &str) -> Option<Non
     IDL_ATTRIBUTE_TO_ANIMATED_PROPERTY_LOOKUP_TABLE
         .get(attribute_name)
         .copied()
+        .map(PropertyId::NonCustom)
 }
 
 /// <https://drafts.csswg.org/web-animations-1/#animation-property-name-to-idl-attribute-name>
@@ -634,6 +819,14 @@ fn lookup_css_property_by_idl_attribute_name(attribute_name: &str) -> Option<Non
 /// Panics when the property name is empty or consists only of `-` characters.
 /// In general it is assumed that `property_name` is a CSS property.
 fn animation_property_name_to_idl_attribute_name(property_name: &str) -> String {
+    if property_name.starts_with("--") {
+        return property_name.to_owned();
+    }
+    match property_name {
+        "float" => return "cssFloat".to_owned(),
+        "offset" => return "cssOffset".to_owned(),
+        _ => {},
+    }
     let mut idl_attribute_name = String::with_capacity(property_name.len());
 
     let mut chunks = property_name.split('-');

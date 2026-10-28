@@ -38,5 +38,34 @@ test(t => {
 }, 'Clearing and setting Animation.effect should update the computed style'
    + ' of the target element');
 
+test(() => {
+  const effect = new KeyframeEffect(null, null);
+  const first = new Animation(effect);
+  const second = new Animation(effect);
+  assert_equals(first.effect, null);
+  assert_equals(second.effect, effect);
+
+  first.effect = effect;
+  assert_equals(second.effect, null);
+  assert_equals(first.effect, effect);
+
+  first.effect = first.effect;
+  assert_equals(first.effect, effect);
+  first.effect = null;
+  second.effect = effect;
+  assert_equals(first.effect, null);
+  assert_equals(second.effect, effect);
+}, 'An idle effect has a single owner across construction, transfer and detachment');
+
+test(() => {
+  const firstEffect = new KeyframeEffect(null, null);
+  const replacement = new KeyframeEffect(null, null);
+  const first = new Animation(firstEffect);
+  first.effect = replacement;
+  const second = new Animation(firstEffect);
+  assert_equals(first.effect, replacement);
+  assert_equals(second.effect, firstEffect);
+}, 'Replacing an effect clears the old effect association');
+
 </script>
 </body>

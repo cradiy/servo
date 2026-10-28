@@ -5887,6 +5887,9 @@ def getUnionTypeTemplateVars(type: IDLType, descriptorProvider: DescriptorProvid
     else:
         raise TypeError(f"Can't handle {type} in unions yet")
 
+    if type.nullable():
+        typeName = f"Option<{typeName}>"
+
     info = getJSToNativeConversionInfo(
         type, descriptorProvider, failureCode="return Ok(None);",
         exceptionCode='return Err(());',

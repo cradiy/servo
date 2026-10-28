@@ -21,6 +21,7 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::refcounted::Trusted;
+use script_bindings::weakref::WeakRef;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::PipelineId;
@@ -65,6 +66,8 @@ pub(crate) struct AnimationManager {
 
     /// Whether or not we have animations that are running.
     has_running_animations: Cell<bool>,
+    script_animations: DomRefCell<Vec<Dom<crate::dom::animation::Animation>>>,
+    script_animation_candidates: DomRefCell<Vec<WeakRef<crate::dom::animation::Animation>>>,
 
     /// A map of nodes with in-progress CSS transitions or pending events.
     rooted_animation_nodes: DomRefCell<FxHashMap<NoTrace<OpaqueNode>, Dom<Node>>>,
@@ -75,6 +78,7 @@ pub(crate) struct AnimationManager {
 
     /// A list of pending animation-related events.
     pending_events: DomRefCell<Vec<TransitionOrAnimationEvent>>,
+    playback_events: DomRefCell<Vec<PendingPlaybackEvent>>,
 
     /// The timeline value at the last time all animations were marked dirty.
     /// This is used to prevent marking animations dirty when the timeline
@@ -92,12 +96,163 @@ impl AnimationManager {
             sets: Default::default(),
             animating_images: Default::default(),
             has_running_animations: Cell::new(false),
+            script_animations: Default::default(),
+            script_animation_candidates: Default::default(),
             rooted_animation_nodes: Default::default(),
             rooted_image_nodes: Default::default(),
             pending_events: Default::default(),
+            playback_events: Default::default(),
             timeline_value_at_last_dirty: Cell::new(0.0),
             image_callback_timer_id: Default::default(),
         }
+    }
+
+    pub(crate) fn queue_playback_event(
+        &self,
+        window: &Window,
+        target: &crate::dom::animation::Animation,
+        event: &crate::dom::animationplaybackevent::AnimationPlaybackEvent,
+        scheduled_time: Option<f64>,
+        composite_order: u64,
+    ) {
+        self.playback_events
+            .borrow_mut()
+            .push(PendingPlaybackEvent {
+                target: Dom::from_ref(target),
+                event: Dom::from_ref(event),
+                scheduled_time,
+                composite_order,
+            });
+        self.handle_animation_presence_or_pending_events_change(window);
+    }
+
+    fn send_playback_events(&self, window: &Window, cx: &mut js::context::JSContext) {
+        let mut events = {
+            let mut pending = self.playback_events.borrow_mut();
+            let rooted = pending
+                .iter()
+                .map(|event| {
+                    (
+                        DomRoot::from_ref(&*event.target),
+                        DomRoot::from_ref(&*event.event),
+                        event.scheduled_time,
+                        event.composite_order,
+                    )
+                })
+                .collect::<Vec<_>>();
+            pending.clear();
+            rooted
+        };
+        if events.is_empty() {
+            return;
+        }
+        events.sort_by(|a, b| {
+            a.2.partial_cmp(&b.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.3.cmp(&b.3))
+        });
+        for (target, event, _, _) in events {
+            event.upcast::<Event>().fire(cx, target.upcast());
+        }
+        self.handle_animation_presence_or_pending_events_change(window);
+    }
+
+    fn script_animation_roots(&self) -> Vec<DomRoot<crate::dom::animation::Animation>> {
+        let mut candidates = self.script_animation_candidates.borrow_mut();
+        candidates.retain(|candidate| candidate.is_alive());
+        candidates.iter().filter_map(WeakRef::root).collect()
+    }
+
+    fn has_script_animation_ticks(&self) -> bool {
+        self.script_animation_roots()
+            .iter()
+            .any(|animation| animation.needs_ticks())
+    }
+
+    pub(crate) fn track_script_animation(
+        &self,
+        animation: &crate::dom::animation::Animation,
+        window: &Window,
+    ) {
+        let mut candidates = self.script_animation_candidates.borrow_mut();
+        if !candidates.iter().any(|candidate| candidate == animation) {
+            candidates.push(WeakRef::new(animation));
+        }
+        drop(candidates);
+        let roots = self.script_animation_roots();
+        *self.script_animations.borrow_mut() = roots
+            .iter()
+            .filter(|animation| animation.is_relevant())
+            .map(|animation| Dom::from_ref(&**animation))
+            .collect();
+        let running = roots.iter().any(|animation| animation.needs_ticks())
+            || self
+                .sets
+                .sets
+                .read()
+                .values()
+                .any(|state| state.needs_animation_ticks());
+        self.update_running_animations_presence(window, running);
+    }
+
+    pub(crate) fn tick_script_animations(&self, cx: &mut js::context::JSContext, window: &Window) {
+        let roots = self.script_animation_roots();
+        for animation in &roots {
+            animation.tick(cx);
+        }
+        *self.script_animations.borrow_mut() = roots
+            .iter()
+            .filter(|animation| animation.is_relevant())
+            .map(|animation| Dom::from_ref(&**animation))
+            .collect();
+        let running = roots.iter().any(|animation| animation.needs_ticks())
+            || self
+                .sets
+                .sets
+                .read()
+                .values()
+                .any(|state| state.needs_animation_ticks());
+        self.update_running_animations_presence(window, running);
+    }
+
+    pub(crate) fn set_script_sample(
+        &self,
+        cx: &mut js::context::JSContext,
+        target: &crate::dom::element::Element,
+        order: u64,
+        values: style::properties::animated_properties::AnimationValueMap,
+        needs_ticks: bool,
+    ) {
+        let node = target.upcast::<Node>();
+        node.set_flag(NodeFlags::HAS_EVER_ANIMATED, true);
+        self.rooted_animation_nodes
+            .borrow_mut()
+            .insert(NoTrace(node.to_opaque()), Dom::from_ref(node));
+        self.sets
+            .sets
+            .write()
+            .entry(AnimationSetKey::new_for_non_pseudo(node.to_opaque()))
+            .or_default()
+            .set_web_animation_sample(order, values, needs_ticks);
+        node.dirty(cx.no_gc(), NodeDamage::Style);
+    }
+
+    pub(crate) fn remove_script_sample(
+        &self,
+        cx: &mut js::context::JSContext,
+        target: &crate::dom::element::Element,
+        order: u64,
+    ) {
+        let node = target.upcast::<Node>();
+        if let Some(set) = self
+            .sets
+            .sets
+            .write()
+            .get_mut(&AnimationSetKey::new_for_non_pseudo(node.to_opaque()))
+        {
+            set.remove_web_animation_sample(order);
+        }
+        node.dirty(cx.no_gc(), NodeDamage::Style);
     }
 
     pub(crate) fn animating_images(&self) -> Arc<RwLock<AnimatingImages>> {
@@ -114,6 +269,9 @@ impl AnimationManager {
         self.rooted_animation_nodes.borrow_mut().clear();
         self.rooted_image_nodes.borrow_mut().clear();
         self.pending_events.borrow_mut().clear();
+        self.playback_events.borrow_mut().clear();
+        self.script_animations.borrow_mut().clear();
+        self.script_animation_candidates.borrow_mut().clear();
     }
 
     // Mark all animations dirty, if they haven't been marked dirty since the
@@ -227,7 +385,7 @@ impl AnimationManager {
         // up space as soon as we are no longer tracking any animations for
         // a node.
         sets.retain(|_, state| !state.is_empty());
-        let have_running_animations = sets.values().any(|state| state.needs_animation_ticks());
+        let have_running_animations = sets.values().any(|state| state.needs_animation_ticks()) || self.has_script_animation_ticks();
 
         self.update_running_animations_presence(window, have_running_animations);
 
@@ -352,7 +510,8 @@ impl AnimationManager {
 
     fn handle_animation_presence_or_pending_events_change(&self, window: &Window) {
         let has_running_animations = self.has_running_animations.get();
-        let has_pending_events = !self.pending_events.borrow().is_empty();
+        let has_pending_events =
+            !self.pending_events.borrow().is_empty() || !self.playback_events.borrow().is_empty();
 
         // Do not send the AnimationCallbacksAbsent state until all pending
         // animation events are delivered.
@@ -636,6 +795,7 @@ impl AnimationManager {
         // Take all of the events here, in case sending one of these events
         // triggers adding new events by forcing a layout.
         let events = std::mem::take(&mut *self.pending_events.safe_borrow_mut(cx.no_gc()));
+        self.send_playback_events(window, cx);
         if events.is_empty() {
             return;
         }
@@ -802,4 +962,13 @@ fn root_node_and_mark_as_having_animated(
         node.set_flag(NodeFlags::HAS_EVER_ANIMATED, true);
         node.as_traced()
     });
+}
+
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct PendingPlaybackEvent {
+    target: Dom<crate::dom::animation::Animation>,
+    event: Dom<crate::dom::animationplaybackevent::AnimationPlaybackEvent>,
+    scheduled_time: Option<f64>,
+    composite_order: u64,
 }

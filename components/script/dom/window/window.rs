@@ -3019,6 +3019,24 @@ impl Window {
         );
     }
 
+    pub(crate) fn animation_values_query(
+        &self,
+        node: &Node,
+        blocks: &[style::properties::PropertyDeclarationBlock],
+    ) -> Option<(
+        style::properties::animated_properties::AnimationValueMap,
+        Vec<style::properties::animated_properties::AnimationValueMap>,
+    )> {
+        self.layout_reflow_deprecated(QueryMsg::AnimationValuesQuery);
+        let document = self.Document();
+        self.layout.borrow().query_animation_values(
+            node.to_trusted_node_address(),
+            blocks,
+            document.animation_manager().sets(),
+            document.current_animation_timeline_value(),
+        )
+    }
+
     pub(crate) fn resolved_font_style_query(
         &self,
         node: &Node,

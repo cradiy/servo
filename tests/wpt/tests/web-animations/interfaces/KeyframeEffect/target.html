@@ -267,5 +267,20 @@ test(t => {
   assert_equals(effect.pseudoElement, '::placeholder');
 }, `Changing pseudoElement to ::placeHOLDER works`);
 
+promise_test(async t => {
+  const element = createDiv(t);
+  element.style.opacity = '0.6';
+  const animation = element.animate({ opacity: ['0.1', '0.9'] }, { duration: 400, fill: 'both' });
+  t.add_cleanup(() => animation.cancel());
+  animation.pause();
+  animation.currentTime = 100;
+  element.remove();
+  await new Promise(requestAnimationFrame);
+  document.body.append(element);
+  await new Promise(requestAnimationFrame);
+  assert_approx_equals(Number(getComputedStyle(element).opacity), 0.3, 0.001);
+  animation.cancel();
+  assert_approx_equals(Number(getComputedStyle(element).opacity), 0.6, 0.001);
+}, 'A retained paused animation restores its sample when its target rejoins the document');
 </script>
 </body>

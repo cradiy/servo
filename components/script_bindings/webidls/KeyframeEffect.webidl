@@ -9,9 +9,9 @@ interface KeyframeEffect : AnimationEffect {
               object?        keyframes,
               optional (unrestricted double or KeyframeEffectOptions) options = {});
 //   constructor(KeyframeEffect source);
-//   attribute Element?           target;
+     attribute Element?           target;
 //   attribute CSSOMString?       pseudoElement;
-//   attribute CompositeOperation composite;
+     attribute CompositeOperation composite;
    [Throws] sequence<object> getKeyframes();
    [Throws] undefined        setKeyframes(object? keyframes);
 };
@@ -28,9 +28,9 @@ enum CompositeOperationOrAuto { "replace", "add", "accumulate", "auto" };
 
 // Necessary for https://drafts.csswg.org/web-animations-1/#process-a-keyframe-like-object
 dictionary BasePropertyIndexedKeyframe {
-//   (double? or sequence<double?>)                         offset = [];
-//   (DOMString or sequence<DOMString>)                     easing = [];
-//   (CompositeOperationOrAuto or sequence<CompositeOperationOrAuto>) composite = [];
+     (double or sequence<double?>)?                         offset;
+     (DOMString or sequence<DOMString>)                     easing;
+     (CompositeOperationOrAuto or sequence<CompositeOperationOrAuto>) composite;
 };
 dictionary BaseKeyframe {
    double?                  offset = null;

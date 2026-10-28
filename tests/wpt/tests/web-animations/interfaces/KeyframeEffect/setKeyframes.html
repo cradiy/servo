@@ -51,5 +51,27 @@ test(t => {
   animation.effect.setKeyframes(frames2);
   assert_equals(getComputedStyle(target).left, "250px");
 }, 'Changes made via setKeyframes should be immediately visible in style');
+test(() => {
+  const effect = new KeyframeEffect(null, { width: ['14px', '38px'] });
+  const original = effect.getKeyframes();
+  const failure = new Error('property access failed');
+  assert_throws_exactly(failure, () => effect.setKeyframes({
+    opacity: ['0', '1'],
+    get width() { throw failure; },
+  }));
+  assert_frame_lists_equal(effect.getKeyframes(), original);
+
+  assert_throws_js(TypeError, () => effect.setKeyframes({
+    opacity: ['0', '1'],
+    easing: ['linear', 'linear', 'invalid'],
+  }));
+  assert_frame_lists_equal(effect.getKeyframes(), original);
+
+  effect.setKeyframes({ opacity: ['0.2', '0.8'] });
+  const replaced = effect.getKeyframes();
+  assert_equals(replaced.length, 2);
+  assert_equals(replaced[0].opacity, '0.2');
+  assert_false('width' in replaced[0]);
+}, 'Failed property-indexed updates preserve keyframes and allow a later successful replacement');
 </script>
 </body>
