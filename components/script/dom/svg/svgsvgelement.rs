@@ -84,7 +84,7 @@ impl SVGSVGElement {
             .upcast::<Element>()
             .style_without_reflow()
             .map(|style| *style.get_color());
-        self.invalidate_cached_serialized_subtree_and_rasterization_result(cx.no_gc());
+        self.invalidate_serialized_subtree(cx.no_gc(), false);
         *self.cached_color.borrow_mut() = color;
         let document_fragment = self.owner_document().CreateDocumentFragment(cx);
         let cloned_node = Node::clone(
@@ -185,10 +185,16 @@ impl SVGSVGElement {
     }
 
     fn invalidate_cached_serialized_subtree_and_rasterization_result(&self, no_gc: &NoGC) {
+        self.invalidate_serialized_subtree(no_gc, true);
+    }
+
+    fn invalidate_serialized_subtree(&self, no_gc: &NoGC, evict_raster: bool) {
         let owner_window = self.owner_window();
-        owner_window
-            .image_cache()
-            .evict_rasterized_image(&self.uuid);
+        if evict_raster {
+            owner_window
+                .image_cache()
+                .evict_rasterized_image(&self.uuid);
+        }
         if let Some(Ok(url)) = &*self.cached_serialized_data_url.borrow() {
             owner_window.layout_mut().remove_cached_image(url);
             owner_window.image_cache().evict_completed_image(

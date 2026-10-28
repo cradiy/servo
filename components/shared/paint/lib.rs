@@ -713,6 +713,8 @@ pub enum ImageUpdate {
     ),
     /// Delete a previously registered image registration.
     DeleteImage(ImageKey),
+    /// Delete an image atomically with the next display list for its pipeline.
+    DeleteImageAfterNextDisplayList(ImageKey, PipelineId),
     /// Update an existing image registration.
     UpdateImage(
         ImageKey,
@@ -735,6 +737,11 @@ impl Debug for ImageUpdate {
                 .field(is_animated_image)
                 .finish(),
             Self::DeleteImage(image_key) => f.debug_tuple("DeleteImage").field(image_key).finish(),
+            Self::DeleteImageAfterNextDisplayList(key, pipeline) => f
+                .debug_tuple("DeleteImageAfterNextDisplayList")
+                .field(key)
+                .field(pipeline)
+                .finish(),
             Self::UpdateImage(image_key, image_desc, _, epoch) => f
                 .debug_tuple("UpdateImage")
                 .field(image_key)

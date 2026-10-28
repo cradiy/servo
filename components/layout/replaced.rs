@@ -160,6 +160,7 @@ pub(crate) enum ReplacedContentKind {
     Video(VideoInfo),
     SVGElement {
         vector_image: Option<VectorImage>,
+        svg_id: uuid::Uuid,
         has_viewbox: bool,
     },
     Audio,
@@ -332,6 +333,7 @@ impl ReplacedContents {
         (
             ReplacedContentKind::SVGElement {
                 vector_image,
+                svg_id: svg_data.svg_id,
                 has_viewbox: svg_data.view_box.is_some(),
             },
             natural_size,
@@ -625,13 +627,10 @@ impl ReplacedContents {
             },
             ReplacedContentKind::SVGElement {
                 vector_image,
+                svg_id,
                 has_viewbox,
             } => {
-                let Some(vector_image) = vector_image else {
-                    return vec![];
-                };
-
-                if !has_viewbox {
+                if !has_viewbox && let Some(vector_image) = vector_image {
                     base.set_rect(
                         PhysicalSize::new(
                             vector_image
@@ -657,14 +656,22 @@ impl ReplacedContents {
                 );
 
                 let tag = self.base_fragment_info.tag.unwrap();
-                layout_context
-                    .image_resolver
-                    .rasterize_vector_image(
-                        vector_image.id,
-                        raster_size,
-                        tag.node,
-                        vector_image.svg_id,
-                    )
+                vector_image
+                    .as_ref()
+                    .and_then(|vector_image| {
+                        layout_context.image_resolver.rasterize_vector_image(
+                            vector_image.id,
+                            raster_size,
+                            tag.node,
+                            Some(*svg_id),
+                        )
+                    })
+                    .or_else(|| {
+                        layout_context
+                            .image_resolver
+                            .image_cache
+                            .last_complete_svg_raster(*svg_id, raster_size)
+                    })
                     .and_then(|image| image.id)
                     .map(|image_key| {
                         Fragment::Image(Arc::new(ImageFragment {

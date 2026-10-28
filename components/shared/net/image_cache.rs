@@ -300,6 +300,9 @@ pub trait ImageCache: Sync + Send {
         callback: ImageCacheResponseCallback,
     );
 
+    /// Returns the last complete raster at this size while an inline SVG is being updated.
+    fn last_complete_svg_raster(&self, svg_id: Uuid, size: DeviceIntSize) -> Option<RasterImage>;
+
     /// Removes the rasterized image from the image_cache, identified by the id of the SVG
     fn evict_rasterized_image(&self, svg_id: &Uuid);
 

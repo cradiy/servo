@@ -129,6 +129,7 @@ pub(crate) struct Painter {
     /// A cache that stores data for all animating images uploaded to WebRender. This is used
     /// for animated images, which only need to update their offset in the data.
     animation_image_cache: FxHashMap<ImageKey, Arc<Vec<u8>>>,
+    pending_image_deletions: FxHashMap<PipelineId, FxHashSet<ImageKey>>,
 
     /// A [`WebContentAnimator`] used to manage web content-derived animations. Currently this only
     /// manages blinking caret animations.
@@ -291,6 +292,7 @@ impl Painter {
             last_mouse_move_position: None,
             frame_delayer: Default::default(),
             animation_image_cache: FxHashMap::default(),
+            pending_image_deletions: FxHashMap::default(),
             web_content_animator: WebContentAnimator::new(
                 paint.event_loop_waker.clone_box(),
                 (*timer_refresh_driver).clone(),
@@ -928,6 +930,7 @@ impl Painter {
         if fully_exited {
             let mut transaction = Transaction::new();
             transaction.remove_pipeline(pipeline_id.into());
+            self.delete_retired_pipeline_images(pipeline_id, &mut transaction);
             self.send_transaction(transaction);
         }
     }
@@ -1109,6 +1112,7 @@ impl Painter {
         }
 
         transaction.set_display_list(epoch, (pipeline_id, built_display_list));
+        self.delete_retired_pipeline_images(pipeline_id.into(), &mut transaction);
 
         self.update_transaction_with_all_scroll_offsets(&mut transaction);
         self.send_transaction(transaction);
@@ -1156,6 +1160,16 @@ impl Painter {
         }
     }
 
+    fn delete_retired_pipeline_images(&mut self, pipeline: PipelineId, txn: &mut Transaction) {
+        if let Some(keys) = self.pending_image_deletions.remove(&pipeline) {
+            for key in keys {
+                txn.delete_image(key);
+                self.frame_delayer.delete_image(key);
+                self.animation_image_cache.remove(&key);
+            }
+        }
+    }
+
     pub(crate) fn update_images(&mut self, updates: SmallVec<[ImageUpdate; 1]>) {
         let mut txn = Transaction::new();
         for update in updates {
@@ -1172,7 +1186,15 @@ impl Painter {
                         None,
                     );
                 },
-                ImageUpdate::DeleteImage(key) => {
+                ImageUpdate::DeleteImageAfterNextDisplayList(key, pipeline)
+                    if self.webview_renderers.values().any(|view| view.pipelines.contains_key(&pipeline)) =>
+                {
+                    self.pending_image_deletions.entry(pipeline).or_default().insert(key);
+                },
+                ImageUpdate::DeleteImageAfterNextDisplayList(key, _) | ImageUpdate::DeleteImage(key) => {
+                    for keys in self.pending_image_deletions.values_mut() {
+                        keys.remove(&key);
+                    }
                     txn.delete_image(key);
                     self.frame_delayer.delete_image(key);
                     self.animation_image_cache.remove(&key);
@@ -1333,6 +1355,7 @@ impl Painter {
         let mut transaction = Transaction::new();
         for pipeline_id in webview_renderer.pipelines.keys() {
             transaction.remove_pipeline(pipeline_id.into());
+            self.delete_retired_pipeline_images(*pipeline_id, &mut transaction);
         }
         self.send_transaction(transaction);
 

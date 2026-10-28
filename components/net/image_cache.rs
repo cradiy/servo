@@ -641,6 +641,8 @@ struct ImageCacheStore {
     /// contains the rasterized image.
     rasterized_vector_images: FxHashMap<(PendingImageId, DeviceIntSize), RasterizationTask>,
 
+    complete_svg_rasters: FxHashMap<Uuid, (PendingImageId, DeviceIntSize)>,
+
     /// Mask textures keyed by their source image resource and interpretation.
     image_masks: FxHashMap<
         (
@@ -885,6 +887,24 @@ impl ImageCacheStore {
         }
     }
 
+    fn remove_svg_image(&mut self, image_id: PendingImageId) {
+        if self.complete_svg_rasters.values().any(|(id, _)| *id == image_id) {
+            return;
+        }
+        self.pending_loads.remove(&image_id);
+        self.vector_images.remove(&image_id);
+        let sizes: Vec<_> = self
+            .rasterized_vector_images
+            .keys()
+            .filter_map(|(id, size)| (*id == image_id).then_some(*size))
+            .collect();
+        for size in sizes {
+            self.remove_rasterized_vector_image(&image_id, &size);
+        }
+        self.svg_rasterization_task_store
+            .remove_all_for_id(image_id);
+    }
+
     fn remove_rasterized_vector_image(
         &mut self,
         image_id: &PendingImageId,
@@ -899,7 +919,7 @@ impl ImageCacheStore {
                     self.remove_image_masks(image_id);
                     self.paint_api.update_images(
                         self.webview_id.into(),
-                        vec![ImageUpdate::DeleteImage(image_id)].into(),
+                        vec![ImageUpdate::DeleteImageAfterNextDisplayList(image_id, self.pipeline_id)].into(),
                     );
                 }
             } else {
@@ -1006,6 +1026,7 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
                 completed_loads: HashMap::new(),
                 vector_images: FxHashMap::default(),
                 rasterized_vector_images: FxHashMap::default(),
+                complete_svg_rasters: FxHashMap::default(),
                 image_masks: FxHashMap::default(),
                 image_mask_bytes: 0,
                 mask_pixels: FxHashMap::default(),
@@ -1222,22 +1243,35 @@ impl ImageCache for ImageCacheImpl {
             .rasterized_vector_images
             .entry((image_id, requested_size))
             .or_default();
-        if let Some(result) = entry.result.as_ref() {
-            return Some(result.clone());
+        if let Some(result) = entry.result.clone() {
+            if let Some(svg_id) = svg_id {
+                if let Some((old_id, old_size)) = store
+                    .complete_svg_rasters
+                    .insert(svg_id, (image_id, requested_size))
+                {
+                    if old_id != image_id {
+                        store.remove_svg_image(old_id);
+                    } else if old_size != requested_size
+                        && !store.complete_svg_rasters.values().any(|entry| *entry == (old_id, old_size))
+                    {
+                        store.remove_rasterized_vector_image(&old_id, &old_size);
+                    }
+                }
+                self.svg_id_image_id_map.lock().insert(svg_id, image_id);
+            }
+            return Some(result);
         }
 
-        if let Some(svg_id) = svg_id &&
-            let Some(old_mapped_image_id) =
-                self.svg_id_image_id_map.lock().insert(svg_id, image_id) &&
-            old_mapped_image_id != image_id
+        if let Some(svg_id) = svg_id
+            && let Some(old_mapped_image_id) =
+                self.svg_id_image_id_map.lock().insert(svg_id, image_id)
+            && old_mapped_image_id != image_id
+            && store
+                .complete_svg_rasters
+                .get(&svg_id)
+                .is_none_or(|(id, _)| *id != old_mapped_image_id)
         {
-            store.vector_images.remove(&old_mapped_image_id);
-            store
-                .rasterized_vector_images
-                .remove(&(old_mapped_image_id, requested_size));
-            store
-                .svg_rasterization_task_store
-                .remove_all_for_id(old_mapped_image_id);
+            store.remove_svg_image(old_mapped_image_id);
         }
 
         if store
@@ -1390,20 +1424,26 @@ impl ImageCache for ImageCacheImpl {
         store.remove_loaded_image(url, origin, cors_setting);
     }
 
+    fn last_complete_svg_raster(&self, svg_id: Uuid, size: DeviceIntSize) -> Option<RasterImage> {
+        let store = self.store.lock();
+        let (id, previous_size) = store.complete_svg_rasters.get(&svg_id)?;
+        if *previous_size != size {
+            return None;
+        }
+        store
+            .rasterized_vector_images
+            .get(&(*id, size))?
+            .result
+            .clone()
+    }
+
     fn evict_rasterized_image(&self, svg_id: &Uuid) {
         let mut store = self.store.lock();
         if let Some(mapped_image_id) = self.svg_id_image_id_map.lock().remove(svg_id) {
-            store.pending_loads.remove(&mapped_image_id);
-            store.vector_images.remove(&mapped_image_id);
-            let images_to_remove = store
-                .rasterized_vector_images
-                .keys()
-                .filter(|(id, _size)| *id == mapped_image_id)
-                .cloned()
-                .collect::<Vec<_>>();
-            for (id, requested_size) in images_to_remove {
-                store.remove_rasterized_vector_image(&id, &requested_size);
-            }
+            store.remove_svg_image(mapped_image_id);
+        }
+        if let Some((id, _)) = store.complete_svg_rasters.remove(svg_id) {
+            store.remove_svg_image(id);
         }
     }
 
@@ -1810,6 +1850,7 @@ impl ImageCacheStore {
         self.completed_loads = Default::default();
         self.vector_images = Default::default();
         self.rasterized_vector_images = Default::default();
+        self.complete_svg_rasters.clear();
         self.svg_rasterization_task_store = Default::default();
         self.pending_loads = Default::default();
         self.key_cache = Default::default();
