@@ -552,19 +552,23 @@ impl Window {
         self.exists_mut_observer.set(true);
     }
 
-    #[expect(unsafe_code)]
-    pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+    fn clear_js_runtime_common(&self) {
         self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
+        self.current_state.set(WindowState::Zombie);
+        self.as_global_scope()
+            .task_manager()
+            .cancel_all_tasks_and_ignore_future_tasks();
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+        self.clear_js_runtime_common();
         unsafe {
             *self.js_runtime.borrow_for_script_deallocation() = None;
-            self.window_proxy.set(None);
-            self.current_state.set(WindowState::Zombie);
-            self.as_global_scope()
-                .task_manager()
-                .cancel_all_tasks_and_ignore_future_tasks();
         }
+        self.window_proxy.set(None);
     }
 
     /// Tell the embedder to stop producing position updates for this `Window`, so that a
@@ -726,12 +730,6 @@ impl Window {
 
     #[cfg(feature = "webgl")]
     pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
-        self.webgl_chan.clone()
-    }
-
-    // TODO: rename the function to webgl_chan after the existing `webgl_chan` function is removed.
-    #[cfg(feature = "webgl")]
-    pub(crate) fn webgl_chan_value(&self) -> Option<WebGLChan> {
         self.webgl_chan.clone()
     }
 
@@ -1006,6 +1004,7 @@ impl Window {
             has_trustworthy_ancestor_origin,
             policy_container,
             origin,
+            network_partition_key,
         ) = if let Some(no_gc) = no_gc {
             let document = self.document_unrooted(no_gc);
             (
@@ -1014,6 +1013,7 @@ impl Window {
                 document.has_trustworthy_ancestor_or_current_origin(),
                 document.policy_container().clone(),
                 document.origin().clone(),
+                document.determine_the_network_partition_key(),
             )
         } else {
             let document = self.Document();
@@ -1023,6 +1023,7 @@ impl Window {
                 document.has_trustworthy_ancestor_or_current_origin(),
                 document.policy_container().clone(),
                 document.origin().clone(),
+                document.determine_the_network_partition_key(),
             )
         };
         RequestClient {
@@ -1032,6 +1033,7 @@ impl Window {
             is_nested_browsing_context: !self.is_top_level(),
             insecure_requests_policy,
             has_trustworthy_ancestor_origin,
+            network_partition_key,
         }
     }
 
@@ -2485,24 +2487,17 @@ impl Window {
     }
 
     pub(crate) fn clear_js_runtime(&self) {
-        self.stop_geolocation_watches();
-        self.as_global_scope()
-            .remove_web_messaging_and_dedicated_workers_infra();
+        self.clear_js_runtime_common();
 
         // Clean up any active promises
         // https://github.com/servo/servo/issues/15318
         self.Document().teardown_custom_element_registry();
 
-        self.current_state.set(WindowState::Zombie);
         *self.js_runtime.borrow_mut() = None;
 
         if let Some(performance) = self.performance.get() {
             performance.clear_and_disable_performance_entry_buffer();
         }
-
-        self.as_global_scope()
-            .task_manager()
-            .cancel_all_tasks_and_ignore_future_tasks();
 
         // From <https://w3c.github.io/IndexedDB/#database-connection>
         // > The connection can be closed through several means. If the execution context where

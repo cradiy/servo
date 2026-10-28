@@ -418,7 +418,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1239,9 +1239,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.7.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50a649af8a827553c29fb0cb4bd4a6f1a0dd695bd3232b9bc98bd9c8a3ffbb8b"
+checksum = "877bf67ac8e52449eb2f9e98a344ea163beb70dd1f9eebe3cc5357dcfeaee4df"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1484,9 +1484,9 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "combine"
-version = "4.6.8"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
+checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
@@ -1837,7 +1837,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
 dependencies = [
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2632,7 +2632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2785,9 +2785,9 @@ dependencies = [
 
 [[package]]
 name = "find-msvc-tools"
-version = "0.1.14"
+version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "fixed_decimal"
@@ -2851,9 +2851,9 @@ dependencies = [
 
 [[package]]
 name = "font-types"
-version = "0.12.6"
+version = "0.12.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
+checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
 ]
@@ -3211,7 +3211,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4629,9 +4629,9 @@ dependencies = [
 
 [[package]]
 name = "inout"
-version = "0.2.2"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
+checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
 dependencies = [
  "block-padding",
  "hybrid-array",
@@ -6492,7 +6492,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7429,7 +7429,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
 dependencies = [
  "bytemuck",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "once_cell",
 ]
 
@@ -7440,7 +7440,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "005c8acf251756c478b0bf402885bfd88a1476020c4c7e6060edc1aa68da38ea"
 dependencies = [
  "bytemuck",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "once_cell",
 ]
 
@@ -7754,7 +7754,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7811,7 +7811,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7855,9 +7855,9 @@ dependencies = [
 
 [[package]]
 name = "schannel"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+checksum = "9cb23c424d8ee841bb4d813677ca237e2a610067d594fec130f87d6093495ab5"
 dependencies = [
  "windows-sys 0.61.2",
 ]
@@ -7998,7 +7998,7 @@ dependencies = [
 [[package]]
 name = "selectors"
 version = "0.41.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "bitflags 2.13.2",
  "cssparser",
@@ -8642,7 +8642,7 @@ dependencies = [
  "content-security-policy",
  "dwrote",
  "euclid",
- "font-types 0.12.6",
+ "font-types 0.12.7",
  "fontsan",
  "freetype-sys",
  "harfbuzz-sys",
@@ -8653,7 +8653,6 @@ dependencies = [
  "log",
  "malloc_size_of_derive",
  "memmap2",
- "ndk",
  "num-traits",
  "objc2 0.6.5",
  "objc2-core-foundation",
@@ -8687,6 +8686,7 @@ dependencies = [
  "uuid",
  "webrender_api",
  "winapi",
+ "xml",
  "yeslogic-fontconfig-sys",
 ]
 
@@ -9902,7 +9902,7 @@ dependencies = [
 [[package]]
 name = "servo_arc"
 version = "0.5.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "serde",
  "stable_deref_trait",
@@ -10398,7 +10398,7 @@ dependencies = [
 [[package]]
 name = "stylo"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "app_units",
  "arrayvec",
@@ -10456,7 +10456,7 @@ dependencies = [
 [[package]]
 name = "stylo_atoms"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "string_cache",
  "string_cache_codegen",
@@ -10465,7 +10465,7 @@ dependencies = [
 [[package]]
 name = "stylo_derive"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -10477,7 +10477,7 @@ dependencies = [
 [[package]]
 name = "stylo_dom"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "bitflags 2.13.2",
  "stylo_malloc_size_of",
@@ -10486,7 +10486,7 @@ dependencies = [
 [[package]]
 name = "stylo_malloc_size_of"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "app_units",
  "cssparser",
@@ -10505,7 +10505,7 @@ dependencies = [
 [[package]]
 name = "stylo_static_prefs"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "toml 1.1.6+spec-1.1.0",
 ]
@@ -10513,7 +10513,7 @@ dependencies = [
 [[package]]
 name = "stylo_traits"
 version = "0.22.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "app_units",
  "bitflags 2.13.2",
@@ -10700,7 +10700,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10937,7 +10937,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 [[package]]
 name = "to_shmem"
 version = "0.6.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "cssparser",
  "hashbrown 0.17.1",
@@ -10951,7 +10951,7 @@ dependencies = [
 [[package]]
 name = "to_shmem_derive"
 version = "0.2.0"
-source = "git+https://github.com/cradiy/stylo?rev=9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44#9aaa33fbecb649e8d5a6ca7c9c2a66168e92cd44"
+source = "git+https://github.com/cradiy/stylo?rev=036760987b3a9aba4ef465764ad9dac3a384dc60#036760987b3a9aba4ef465764ad9dac3a384dc60"
 dependencies = [
  "darling 0.20.11",
  "proc-macro2",
@@ -11047,7 +11047,7 @@ dependencies = [
  "indexmap 2.14.2",
  "serde_core",
  "serde_spanned",
- "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow 1.0.4",
@@ -11064,9 +11064,9 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
+version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
 dependencies = [
  "serde_core",
 ]
@@ -11078,7 +11078,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap 2.14.2",
- "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_datetime 1.1.2+spec-1.1.0",
  "toml_parser",
  "winnow 1.0.4",
 ]
@@ -12290,7 +12290,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

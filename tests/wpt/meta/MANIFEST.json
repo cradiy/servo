@@ -8665,6 +8665,13 @@
        {}
       ]
      ],
+     "visibility-collapse-colgroup-crash.html": [
+      "cad21f10213ce9879d209c67e50af1fb809838f7",
+      [
+       null,
+       {}
+      ]
+     ],
      "visibility-collapse-colspan-crash.html": [
       "591fbd9a9941648f1456b41aeee1e23ed660a1ed",
       [
@@ -12757,6 +12764,13 @@
        "crashtests": {
         "no-blocking-loads-gc-crash.html": [
          "381f163a7f1d8793c8d8a3132637c1e355312b41",
+         [
+          null,
+          {}
+         ]
+        ],
+        "reinsert-audio-element-onerror-crash.html": [
+         "96aa910b9712308325a882d43bc1c5da06be492c",
          [
           null,
           {}
@@ -301786,6 +301800,32 @@
        {}
       ]
      ],
+     "intrinsic-percent-replaced-034.html": [
+      "4e1ef4e1e45bd9534bca0596ac6178f1bf177892",
+      [
+       null,
+       [
+        [
+         "/css/reference/ref-filled-green-100px-square-only.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "intrinsic-percent-replaced-035.html": [
+      "de43a3b9500666aaf81e5a5a7d1f4e234188b2df",
+      [
+       null,
+       [
+        [
+         "/css/reference/ref-filled-green-100px-square-only.html",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
      "intrinsic-percent-replaced-dynamic-001.html": [
       "1128ffa1759f26011c0639d8b5f498322c6396ac",
       [
@@ -331676,6 +331716,19 @@
        {}
       ]
      ],
+     "backface-visibility-hidden-background-blend-mode.html": [
+      "8e951079da33e0018756c533e203d8e0e9a08cf8",
+      [
+       null,
+       [
+        [
+         "/css/reference/ref-filled-green-100px-square.xht",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
      "backface-visibility-hidden-child-translate.html": [
       "f03d88f0187b746379e0a882b291411cb36ee1ad",
       [
@@ -331691,6 +331744,19 @@
      ],
      "backface-visibility-hidden-child-will-change-transform.html": [
       "dda7ba6827ff65686dff7a414a20c001effa33a2",
+      [
+       null,
+       [
+        [
+         "/css/reference/ref-filled-green-100px-square.xht",
+         "=="
+        ]
+       ],
+       {}
+      ]
+     ],
+     "backface-visibility-hidden-filter.html": [
+      "326f038e4fd0fc47fd74407afa62b74fbe32c109",
       [
        null,
        [
@@ -1453727,6 +1453793,13 @@
     ],
     "texImage2D.html": [
      "86b84d1a999f165ef63fbb24ccf0587e4f6a01a3",
+     [
+      null,
+      {}
+     ]
+    ],
+    "texImage3D-size-limits.html": [
+     "77c02de8eedc5191707bd6b15da330601fcdfc3f",
      [
       null,
       {}
