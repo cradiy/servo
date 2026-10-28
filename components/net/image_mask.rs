@@ -106,7 +106,7 @@ pub(super) fn tile_mask(
     output
 }
 
-#[derive(malloc_size_of_derive::MallocSizeOf)]
+#[derive(Clone, malloc_size_of_derive::MallocSizeOf)]
 pub(super) struct MaskPixels {
     #[conditional_malloc_size_of]
     pub bytes: Arc<Vec<u8>>,

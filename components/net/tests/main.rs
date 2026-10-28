@@ -195,3 +195,9 @@ fn fetch_with_cors_cache(request: Request, cache: &mut CorsCache) -> Response {
 pub(crate) fn mock_origin() -> ImmutableOrigin {
     ServoUrl::parse("http://servo.org").unwrap().origin()
 }
+
+#[path = "../svg_css.rs"]
+mod svg_css;
+
+#[path = "../svg_motion.rs"]
+mod svg_motion;

@@ -297,8 +297,16 @@ pub struct SharedRasterImage {
     pub is_opaque: bool,
 }
 
+/// An image whose frames are generated asynchronously from an elapsed time in seconds.
+pub trait DynamicImage: Send + Sync {
+    /// Request the current frame without blocking, returning a previously completed frame if ready.
+    fn sample(&self, seconds: f64) -> Option<Arc<Vec<u8>>>;
+}
+
 #[derive(Clone, MallocSizeOf)]
 pub struct RasterImage {
+    #[ignore_malloc_size_of = "Dynamic image renderer owns bounded worker state"]
+    pub dynamic: Option<Arc<dyn DynamicImage>>,
     pub metadata: ImageMetadata,
     pub format: PixelFormat,
     pub id: Option<ImageKey>,
@@ -360,7 +368,7 @@ impl ImageFrameView<'_> {
 
 impl RasterImage {
     pub fn should_animate(&self) -> bool {
-        self.frames.len() > 1
+        self.dynamic.is_some() || self.frames.len() > 1
     }
 
     fn frame_view<'image>(&'image self, frame: &ImageFrame) -> ImageFrameView<'image> {
@@ -425,12 +433,12 @@ impl RasterImage {
             PixelFormat::BGRA8 => (
                 WebRenderImageFormat::BGRA8,
                 GenericSharedMemory::from_arc_vec(self.bytes.clone()),
-                self.should_animate(),
+                self.dynamic.is_none() && self.should_animate(),
             ),
             PixelFormat::RGBA8 => (
                 WebRenderImageFormat::RGBA8,
                 GenericSharedMemory::from_arc_vec(self.bytes.clone()),
-                self.should_animate(),
+                self.dynamic.is_none() && self.should_animate(),
             ),
             PixelFormat::RGB8 => {
                 let frame_bytes = &self.bytes[frame.byte_range.clone()];

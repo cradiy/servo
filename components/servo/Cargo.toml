@@ -67,6 +67,7 @@ gamepad = [
 jitspew = ["script/jitspew"]
 js_backtrace = ["script/js_backtrace"]
 js_jit = ["script/js_jit"]
+jemalloc = ["dep:servo-allocator", "servo-allocator/background-threads"]
 # The `dep:` prefixes here mean that these do nothing on Android and OHOS, where these
 # dependencies aren't declared.
 media-gstreamer = ["dep:servo-media-gstreamer", "dep:gstreamer"]
@@ -155,6 +156,7 @@ rustc-hash = { workspace = true }
 script = { workspace = true }
 script_traits = { workspace = true }
 serde = { workspace = true }
+servo-allocator = { workspace = true, optional = true }
 servo-background-hang-monitor = { workspace = true }
 servo-base = { workspace = true }
 servo-bluetooth = { workspace = true, optional = true }

@@ -14,6 +14,7 @@ build = "build.rs"
 path = "lib.rs"
 
 [features]
+background-threads = ["use-jemalloc", "tikv-jemallocator/background_threads"]
 allocation-tracking = ["backtrace", "dep:rustc-hash", "log"]
 use-jemalloc = ["dep:tikv-jemalloc-sys", "dep:tikv-jemallocator"]
 

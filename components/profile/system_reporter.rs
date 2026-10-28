@@ -186,7 +186,7 @@ fn proportional_set_size() -> Option<usize> {
 
     // String looks like: "Pss:                 227 kB"
     let pss_str = pss_line.split_whitespace().nth(1)?;
-    pss_str.parse().ok()
+    pss_str.parse::<usize>().ok()?.checked_mul(1024)
 }
 
 #[cfg(not(target_os = "linux"))]

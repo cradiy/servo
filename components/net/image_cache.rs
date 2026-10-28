@@ -93,11 +93,133 @@ fn parse_svg_document_in_memory(
     bytes: &[u8],
     usvg_options: Arc<usvg::Options>,
 ) -> Result<usvg::Tree, &'static str> {
+    let decompressed = bytes
+        .starts_with(&[0x1f, 0x8b])
+        .then(|| usvg::decompress_svgz(bytes))
+        .transpose()
+        .map_err(|_| "Not a valid compressed SVG document")?;
+    let bytes = decompressed.as_deref().unwrap_or(bytes);
+    let resolved = std::str::from_utf8(bytes)
+        .ok()
+        .and_then(crate::svg_css::resolve_variables);
+    let bytes = resolved.as_deref().map(str::as_bytes).unwrap_or(bytes);
     usvg::Tree::from_data(bytes, &usvg_options)
         .inspect_err(|error| {
             warn!("Error when parsing SVG data: {error}");
         })
         .map_err(|_| "Not a valid SVG document")
+}
+
+fn motion_options(
+    options: Arc<usvg::Options<'static>>,
+    fontdb: Arc<fontdb::Database>,
+) -> usvg::Options<'static> {
+    let select = options.clone();
+    let fallback = options.clone();
+    usvg::Options {
+        fontdb,
+        font_resolver: usvg::FontResolver {
+            select_font: Box::new(move |font, database| {
+                (select.font_resolver.select_font)(font, database)
+            }),
+            select_fallback: Box::new(move |character, excluded, database| {
+                (fallback.font_resolver.select_fallback)(character, excluded, database)
+            }),
+        },
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_data: Box::new(move |mime, data, frame_options| {
+                (options.image_href_resolver.resolve_data)(mime, data, frame_options)
+            }),
+            resolve_string: Box::new(|_, _| None),
+        },
+        ..Default::default()
+    }
+}
+
+fn motion_document(bytes: &[u8]) -> Option<Arc<crate::svg_motion::MotionDocument>> {
+    let decompressed = bytes
+        .starts_with(&[0x1f, 0x8b])
+        .then(|| usvg::decompress_svgz(bytes).ok())
+        .flatten();
+    let source = std::str::from_utf8(decompressed.as_deref().unwrap_or(bytes)).ok()?;
+    if !source.contains("animateMotion") {
+        return None;
+    }
+    let source = crate::svg_css::resolve_variables(source).unwrap_or_else(|| source.to_owned());
+    crate::svg_motion::MotionDocument::parse(source).map(Arc::new)
+}
+
+#[derive(Default)]
+struct SvgFrameState {
+    pending: bool,
+    last_request: Option<std::time::Instant>,
+    ready: Option<Arc<Vec<u8>>>,
+    last_frame: Option<Arc<Vec<u8>>>,
+    failed: bool,
+}
+
+struct SvgFrameRenderer {
+    document: Arc<crate::svg_motion::MotionDocument>,
+    prepared: Option<Arc<crate::svg_motion::PreparedMotion>>,
+    options: Arc<usvg::Options<'static>>,
+    fontdb: Arc<fontdb::Database>,
+    pool: Arc<ThreadPool>,
+    size: tiny_skia::IntSize,
+    transform: tiny_skia::Transform,
+    state: Arc<Mutex<SvgFrameState>>,
+}
+
+impl pixels::DynamicImage for SvgFrameRenderer {
+    fn sample(&self, seconds: f64) -> Option<Arc<Vec<u8>>> {
+        let mut state = self.state.lock();
+        let ready = state.ready.take();
+        if state.pending || state.failed {
+            return ready;
+        }
+        if state
+            .last_request
+            .is_some_and(|last| last.elapsed() < std::time::Duration::from_nanos(16_666_667))
+        {
+            return ready;
+        }
+        state.last_request = Some(std::time::Instant::now());
+        state.pending = true;
+        let document = self.document.clone();
+        let prepared = self.prepared.clone();
+        let options = motion_options(self.options.clone(), self.fontdb.clone());
+        let size = self.size;
+        let transform = self.transform;
+        let shared_state = self.state.clone();
+        let last_frame = state.last_frame.clone();
+        self.pool.spawn(move || {
+            SUPPRESS_ABORT_IN_PANIC_HOOK.set(true);
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                if let Some(prepared) = prepared {
+                    return Some(Arc::new(prepared.render(&document, seconds)));
+                }
+                let tree = usvg::Tree::from_str(&document.sample(seconds), &options).ok()?;
+                let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height())?;
+                resvg::render(&tree, transform, &mut pixmap.as_mut());
+                Some(Arc::new(pixmap.take()))
+            }))
+            .ok()
+            .flatten();
+            SUPPRESS_ABORT_IN_PANIC_HOOK.set(false);
+            let changed = result.as_ref().is_some_and(|frame| {
+                last_frame
+                    .as_ref()
+                    .is_none_or(|previous| previous.as_slice() != frame.as_slice())
+            });
+            let mut state = shared_state.lock();
+            state.pending = false;
+            state.failed = result.is_none();
+            if changed {
+                state.last_frame = result.clone();
+                state.ready = result;
+            }
+        });
+        ready
+    }
 }
 
 fn decode_bytes_sync(
@@ -121,6 +243,7 @@ fn decode_bytes_sync(
             .map(|svg_tree| {
                 DecodedImage::Vector(VectorImageData {
                     svg_tree: Arc::new(svg_tree),
+                    motion: motion_document(bytes),
                     cors_status: cors,
                 })
             })
@@ -256,6 +379,8 @@ impl CompletedLoad {
 struct VectorImageData {
     #[conditional_malloc_size_of]
     svg_tree: Arc<usvg::Tree>,
+    #[ignore_malloc_size_of = "Shared bounded SVG source"]
+    motion: Option<Arc<crate::svg_motion::MotionDocument>>,
     cors_status: CorsStatus,
 }
 
@@ -1150,6 +1275,8 @@ impl ImageCache for ImageCacheImpl {
         }
 
         let store = self.store.clone();
+        let options = self.usvg_options.clone();
+        let pool = self.thread_pool.clone();
         self.thread_pool.spawn(move || {
             let transform = tiny_skia::Transform::from_scale(
                 tinyskia_requested_size.width() as f32 / natural_size.width() as f32,
@@ -1175,7 +1302,10 @@ impl ImageCache for ImageCacheImpl {
             // doesn't use internal global state that could become invalid after the panic.
             SUPPRESS_ABORT_IN_PANIC_HOOK.set(true);
             let resvg_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                resvg::render(&vector_image.svg_tree, transform, &mut pixmap.as_mut());
+                let initial_tree = vector_image.motion.as_ref().and_then(|motion| {
+                    usvg::Tree::from_str(&motion.sample(0.0), &motion_options(options.clone(), vector_image.svg_tree.fontdb().clone())).ok()
+                });
+                resvg::render(initial_tree.as_ref().unwrap_or(&vector_image.svg_tree), transform, &mut pixmap.as_mut());
 
                 let bytes = pixmap.take();
                 let frame = ImageFrame {
@@ -1185,7 +1315,16 @@ impl ImageCache for ImageCacheImpl {
                     height: tinyskia_requested_size.height(),
                 };
 
+                let dynamic = vector_image.motion.as_ref().filter(|_| bytes.len() <= 16 * 1024 * 1024).map(|motion| {
+                    Arc::new(SvgFrameRenderer {
+                        prepared: { let prepared = motion.prepare(&motion_options(options.clone(), vector_image.svg_tree.fontdb().clone()), tinyskia_requested_size, natural_size); prepared.map(Arc::new) },
+                        document: motion.clone(), options, pool, fontdb: vector_image.svg_tree.fontdb().clone(),
+                        size: tinyskia_requested_size, transform,
+                        state: Arc::new(Mutex::new(SvgFrameState::default())),
+                    }) as Arc<dyn pixels::DynamicImage>
+                });
                 RasterImage {
+                    dynamic,
                     metadata: ImageMetadata {
                         width: tinyskia_requested_size.width(),
                         height: tinyskia_requested_size.height(),
@@ -1510,7 +1649,7 @@ impl ImageCache for ImageCacheImpl {
         size: DeviceIntSize,
     ) -> Option<WebRenderImageKey> {
         let cache_key = image_mask::composite_key(layers, size)?;
-        let mut store = self.store.lock();
+        let store = self.store.lock();
         if let Some((key, _)) = store.composite_masks.get(&cache_key) {
             return Some(*key);
         }
@@ -1521,7 +1660,35 @@ impl ImageCache for ImageCacheImpl {
         {
             return None;
         }
-        let pixels = image_mask::composite(layers, size, &store.mask_pixels)?;
+        let sources = layers
+            .iter()
+            .filter_map(|layer| layer.image)
+            .map(|key| {
+                store
+                    .mask_pixels
+                    .get(&key)
+                    .cloned()
+                    .map(|pixels| (key, pixels))
+            })
+            .collect::<Option<FxHashMap<_, _>>>()?;
+        drop(store);
+
+        let pixels = image_mask::composite(layers, size, &sources)?;
+
+        let mut store = self.store.lock();
+        if let Some((key, _)) = store.composite_masks.get(&cache_key) {
+            return Some(*key);
+        }
+        if sources.iter().any(|(key, source)| {
+            store
+                .mask_pixels
+                .get(key)
+                .is_none_or(|current| !Arc::ptr_eq(&source.bytes, &current.bytes))
+        }) || store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES ||
+            store.image_masks.len() + store.composite_masks.len() >= 1024
+        {
+            return None;
+        }
         let key = store
             .paint_api
             .generate_image_key_blocking(store.webview_id)?;

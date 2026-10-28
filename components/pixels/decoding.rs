@@ -282,6 +282,7 @@ pub(crate) fn decode_static_image(
         height: rgba.height(),
     };
     Some(RasterImage {
+        dynamic: None,
         metadata: ImageMetadata {
             width: rgba.width(),
             height: rgba.height(),
@@ -367,6 +368,7 @@ where
     }
 
     Some(RasterImage {
+        dynamic: None,
         metadata: ImageMetadata { width, height },
         cors_status,
         load_time: None,

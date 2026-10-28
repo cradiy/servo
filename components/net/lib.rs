@@ -23,6 +23,8 @@ pub mod protocols;
 pub mod request_interceptor;
 pub mod resource_thread;
 pub mod subresource_integrity;
+mod svg_css;
+mod svg_motion;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 mod websocket_loader;

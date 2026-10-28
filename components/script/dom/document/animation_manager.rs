@@ -15,13 +15,14 @@ use embedder_traits::{AnimationState as AnimationsPresentState, UntrustedNodeAdd
 use js::context::NoGC;
 use layout_api::AnimatingImages;
 use libc::c_void;
-use paint_api::ImageUpdate;
+use paint_api::{ImageUpdate, SerializableImageData};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
 use script_bindings::refcounted::Trusted;
 use serde::{Deserialize, Serialize};
+use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::PipelineId;
 use servo_constellation_traits::ScriptToConstellationMessage;
 use style::animation::{
@@ -252,12 +253,24 @@ impl AnimationManager {
             return;
         }
 
-        let updates = self
+        let updates: smallvec::SmallVec<[ImageUpdate; 1]> = self
             .animating_images
             .write()
             .node_to_state_map
             .values_mut()
             .filter_map(|state| {
+                if let Some(dynamic) = &state.image.dynamic {
+                    let bytes = dynamic.sample(state.animation_elapsed(now))?;
+                    let descriptor = state
+                        .image
+                        .webrender_image_descriptor_and_offset_for_frame()?;
+                    return Some(ImageUpdate::UpdateImage(
+                        state.image.id?,
+                        descriptor,
+                        SerializableImageData::Raw(GenericSharedMemory::from_arc_vec(bytes)),
+                        None,
+                    ));
+                }
                 if !state.update_frame_for_animation_timeline_value(now) {
                     return None;
                 }
@@ -281,9 +294,11 @@ impl AnimationManager {
                 }
             })
             .collect();
-        window
-            .paint_api()
-            .update_images(window.webview_id().into(), updates);
+        if !updates.is_empty() {
+            window
+                .paint_api()
+                .update_images(window.webview_id().into(), updates);
+        }
 
         self.maybe_schedule_image_animation_update(window, now);
     }

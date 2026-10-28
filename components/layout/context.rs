@@ -263,6 +263,9 @@ impl ImageResolver {
         let result = self
             .image_cache
             .rasterize_vector_image(image_id, size, svg_id);
+        if let Some(image) = result.as_ref() {
+            self.handle_animated_image(node, Arc::new(image.clone()));
+        }
         if result.is_none() {
             self.pending_rasterization_images
                 .lock()

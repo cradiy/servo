@@ -787,3 +787,85 @@ fn test_svg_not_rasterize_zero_size() {
             .is_none()
     );
 }
+
+#[test]
+fn test_svg_animation_suppresses_identical_frames_and_resumes_on_change() {
+    use std::time::Instant;
+
+    let (cache, keys) = create_test_image_cache();
+    let url = ServoUrl::parse("https://example.net/motion-strip.svg").unwrap();
+    let origin = mock_origin();
+    let ImageCacheResult::ReadyForRequest(id) =
+        cache.get_cached_image_status(url.clone(), &origin, None)
+    else {
+        panic!("Expected an uncached image");
+    };
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponse(
+            create_request_id(),
+            Ok(create_test_metadata(Some(mime::IMAGE_SVG))),
+        ),
+    );
+    let source = br#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="16"><rect x="-2" y="-2" width="4" height="4" fill="orange"><animateMotion path="M 8 8 L 56 8" dur="1s" repeatCount="indefinite"/></rect></svg>"#;
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseChunk(create_request_id(), source.to_vec().into()),
+    );
+    cache.notify_pending_response(
+        id,
+        FetchResponseMsg::ProcessResponseEOF(create_request_id(), Ok(()), create_timing()),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let dynamic = loop {
+        assert!(
+            Instant::now() < deadline,
+            "SVG animation did not become available"
+        );
+        handle_pending_key_requests(&cache, &keys);
+        if let ImageCacheResult::Available(ImageOrMetadataAvailable::ImageAvailable {
+            image: net_traits::image_cache::Image::Vector(vector),
+            ..
+        }) = cache.get_cached_image_status(url.clone(), &origin, None)
+        {
+            if let Some(raster) = cache.rasterize_vector_image(
+                vector.id,
+                webrender_api::units::DeviceIntSize::new(64, 16),
+                None,
+            ) {
+                break raster.dynamic.expect("Expected an animated SVG");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let first = loop {
+        assert!(
+            Instant::now() < deadline,
+            "Initial animation sample timed out"
+        );
+        if let Some(frame) = dynamic.sample(0.25) {
+            break frame;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let until = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < until {
+        assert!(
+            dynamic.sample(0.25).is_none(),
+            "An identical frame was published again"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let next = loop {
+        assert!(
+            Instant::now() < deadline,
+            "Changed animation sample timed out"
+        );
+        if let Some(frame) = dynamic.sample(0.75) {
+            break frame;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_ne!(first, next);
+}

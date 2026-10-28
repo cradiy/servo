@@ -872,6 +872,7 @@ pub struct ImageAnimationState {
     pub image: Arc<RasterImage>,
     pub active_frame: usize,
     frame_start_time: f64,
+    animation_start_time: f64,
 
     /// The number of loops that have fully completed in this [`ImageAnimationState`].
     /// If this is greater than or equal to the maximum number of loops in the
@@ -883,6 +884,7 @@ pub struct ImageAnimationState {
 impl ImageAnimationState {
     pub fn new(image: Arc<RasterImage>, last_update_time: f64) -> Self {
         let completd_loops = match &image.loop_count {
+            None if image.dynamic.is_some() => None,
             None => unreachable!("Loop count of an animated Image should never be None"),
             Some(repeat) if Repeat::Infinite == *repeat => None,
             _ => Some(0),
@@ -892,6 +894,7 @@ impl ImageAnimationState {
             image,
             active_frame: 0,
             frame_start_time: last_update_time,
+            animation_start_time: last_update_time,
             completed_loops: completd_loops,
         }
     }
@@ -900,7 +903,14 @@ impl ImageAnimationState {
         self.image.id
     }
 
+    pub fn animation_elapsed(&self, now: f64) -> f64 {
+        (now - self.animation_start_time).max(0.0)
+    }
+
     pub fn duration_to_next_frame(&self, now: f64) -> Option<Duration> {
+        if self.image.dynamic.is_some() {
+            return Some(Duration::from_nanos(16_666_667));
+        }
         if self.is_finished() {
             return None;
         }
@@ -1110,6 +1120,7 @@ mod test {
         .take(10)
         .collect();
         let image = RasterImage {
+            dynamic: None,
             metadata: ImageMetadata {
                 width: 100,
                 height: 100,
@@ -1152,6 +1163,7 @@ mod test {
         .take(2)
         .collect();
         let image = RasterImage {
+            dynamic: None,
             metadata: ImageMetadata {
                 width: 100,
                 height: 100,
