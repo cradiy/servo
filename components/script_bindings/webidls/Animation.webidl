@@ -26,8 +26,8 @@ interface Animation : EventTarget {
   [Throws] undefined finish();
   [Throws] undefined play();
   [Throws] undefined pause();
-  // undefined updatePlaybackRate(double playbackRate);
-  // undefined reverse();
+  undefined updatePlaybackRate(double playbackRate);
+  [Throws] undefined reverse();
   // undefined persist();
   // [CEReactions]
   // undefined commitStyles();

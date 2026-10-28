@@ -51,6 +51,7 @@ pub(crate) struct Animation {
     start_time: Cell<Option<f64>>,
     hold_time: Cell<Option<f64>>,
     playback_rate: Cell<f64>,
+    pending_playback_rate: Cell<Option<f64>>,
     paused: Cell<bool>,
     pending: Cell<bool>,
     ready_promise: DomRefCell<Option<TracedPromise>>,
@@ -129,6 +130,56 @@ impl Animation {
         }
     }
 
+    fn effective_playback_rate(&self) -> f64 {
+        self.pending_playback_rate
+            .get()
+            .unwrap_or(self.playback_rate.get())
+    }
+
+    fn apply_pending_playback_rate(&self) {
+        if let Some(rate) = self.pending_playback_rate.take() {
+            self.playback_rate.set(rate);
+        }
+    }
+
+    fn play(&self, cx: &mut JSContext) -> Fallible<()> {
+        if !self.paused.get()
+            && self.PlayState() == AnimationPlayState::Running
+            && self.pending_playback_rate.get().is_none()
+        {
+            return Ok(());
+        }
+        let rate = self.effective_playback_rate();
+        let end = self.end_time();
+        let current = self.current_time();
+        let rewind = current.is_none()
+            || (current.is_some_and(|time| {
+                if rate < 0.0 {
+                    time <= 0.0 || time > end
+                } else if rate > 0.0 {
+                    time < 0.0 || time >= end
+                } else {
+                    false
+                }
+            }));
+        let time = if rewind {
+            if rate < 0.0 { end } else { 0.0 }
+        } else {
+            current.unwrap()
+        };
+        if !time.is_finite() {
+            return Err(Error::InvalidState(None));
+        }
+        if rewind || self.paused.get() || self.start_time.get().is_none() {
+            self.hold_time.set(Some(time));
+            self.start_time.set(None);
+        }
+        self.begin_pending();
+        self.paused.set(false);
+        self.effect_changed(cx);
+        Ok(())
+    }
+
     fn begin_pending(&self) {
         if !self.pending.replace(true) {
             *self.ready_promise.borrow_mut() = None;
@@ -202,6 +253,7 @@ impl Animation {
                 start_time: Cell::new(None),
                 hold_time: Cell::new(None),
                 playback_rate: Cell::new(1.0),
+                pending_playback_rate: Cell::new(None),
                 paused: Cell::new(false),
                 pending: Cell::new(false),
                 ready_promise: Default::default(),
@@ -324,6 +376,7 @@ impl Animation {
         }
         if self.pending.get() && self.timeline_time().is_some() {
             let time = self.current_time().unwrap_or(0.0);
+            self.apply_pending_playback_rate();
             if self.paused.get() {
                 self.hold_time.set(Some(time));
                 self.start_time.set(None);
@@ -331,7 +384,12 @@ impl Animation {
                 let rate = self.playback_rate.get();
                 self.start_time
                     .set(Some(if rate == 0.0 { now } else { now - time / rate }));
-                if rate != 0.0 {
+                if rate == 0.0
+                    || (rate > 0.0 && time >= self.end_time())
+                    || (rate < 0.0 && time <= 0.0)
+                {
+                    self.hold_time.set(Some(time));
+                } else {
                     self.hold_time.set(None);
                 }
             }
@@ -462,6 +520,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         match value {
             Some(value) => {
                 if self.pending.get() && self.paused.get() {
+                    self.apply_pending_playback_rate();
                     self.resolve_ready(cx);
                 }
                 if self.PlayState() == AnimationPlayState::Idle {
@@ -483,6 +542,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         self.start_time.get().and_then(Finite::new)
     }
     fn SetStartTime(&self, cx: &mut JSContext, value: Option<Finite<f64>>) {
+        self.apply_pending_playback_rate();
         let previous = self.current_time();
         self.start_time.set(value.map(|value| *value));
         self.hold_time
@@ -499,6 +559,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         Finite::wrap(self.playback_rate.get())
     }
     fn SetPlaybackRate(&self, cx: &mut JSContext, value: Finite<f64>) {
+        self.pending_playback_rate.set(None);
         let time = self.current_time();
         self.playback_rate.set(*value);
         if let Some(time) = time {
@@ -507,14 +568,17 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         self.effect_changed(cx);
     }
     fn PlayState(&self) -> AnimationPlayState {
-        let Some(time) = self.current_time() else {
+        let time = self.current_time();
+        if time.is_none() && self.start_time.get().is_none() && !self.pending.get() {
             return AnimationPlayState::Idle;
-        };
+        }
         if self.paused.get() {
             return AnimationPlayState::Paused;
         }
-        let rate = self.playback_rate.get();
-        if (rate > 0.0 && time >= self.end_time()) || (rate < 0.0 && time <= 0.0) {
+        let rate = self.effective_playback_rate();
+        if time.is_some_and(|time| {
+            (rate > 0.0 && time >= self.end_time()) || (rate < 0.0 && time <= 0.0)
+        }) {
             AnimationPlayState::Finished
         } else {
             AnimationPlayState::Running
@@ -556,32 +620,41 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         promise
     }
     fn Play(&self, cx: &mut JSContext) -> Fallible<()> {
-        if !self.paused.get() && self.PlayState() == AnimationPlayState::Running {
-            return Ok(());
+        self.play(cx)
+    }
+    fn UpdatePlaybackRate(&self, cx: &mut JSContext, value: Finite<f64>) {
+        let previous_state = self.PlayState();
+        let time = self.current_time();
+        self.pending_playback_rate.set(Some(*value));
+        if self.pending.get() {
+            return;
         }
-        let rate = self.playback_rate.get();
-        let end = self.end_time();
-        let current = self.current_time();
-        let rewind = current.is_none_or(|time| {
-            if rate < 0.0 {
-                time <= 0.0 || time > end
-            } else {
-                time < 0.0 || time >= end
-            }
-        });
-        let time = if rewind {
-            if rate < 0.0 { end } else { 0.0 }
+        if matches!(
+            previous_state,
+            AnimationPlayState::Idle | AnimationPlayState::Paused
+        ) || time.is_none()
+        {
+            self.apply_pending_playback_rate();
+        } else if previous_state == AnimationPlayState::Finished {
+            self.apply_pending_playback_rate();
+            self.set_time(time.unwrap());
         } else {
-            current.unwrap()
-        };
-        if !time.is_finite() {
+            self.begin_pending();
+        }
+        self.effect_changed(cx);
+    }
+    fn Reverse(&self, cx: &mut JSContext) -> Fallible<()> {
+        if self.timeline_time().is_none() {
             return Err(Error::InvalidState(None));
         }
-        self.begin_pending();
-        self.paused.set(false);
-        self.hold_time.set(Some(time));
-        self.start_time.set(None);
-        self.effect_changed(cx);
+        let previous_pending = self.pending_playback_rate.get();
+        let rate = self.effective_playback_rate();
+        let rate = if rate == 0.0 { 0.0 } else { -rate };
+        self.pending_playback_rate.set(Some(rate));
+        if let Err(error) = self.play(cx) {
+            self.pending_playback_rate.set(previous_pending);
+            return Err(error);
+        }
         Ok(())
     }
     fn Pause(&self, cx: &mut JSContext) -> Fallible<()> {
@@ -589,7 +662,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
             return Ok(());
         }
         let time = self.current_time().unwrap_or_else(|| {
-            if self.playback_rate.get() < 0.0 {
+            if self.effective_playback_rate() < 0.0 {
                 self.end_time()
             } else {
                 0.0
@@ -607,11 +680,12 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         Ok(())
     }
     fn Finish(&self, cx: &mut JSContext) -> Fallible<()> {
-        let rate = self.playback_rate.get();
+        let rate = self.effective_playback_rate();
         let end = self.end_time();
         if rate == 0.0 || (rate > 0.0 && !end.is_finite()) {
             return Err(Error::InvalidState(None));
         }
+        self.apply_pending_playback_rate();
         self.paused.set(false);
         self.set_time(if rate < 0.0 { 0.0 } else { end });
         self.resolve_ready(cx);
@@ -649,6 +723,7 @@ impl AnimationMethods<crate::DomTypeHolder> for Animation {
         if !was_idle {
             self.queue_playback_event(cx, atom!("cancel"), None);
         }
+        self.apply_pending_playback_rate();
         self.start_time.set(None);
         self.hold_time.set(None);
         self.paused.set(false);
