@@ -142,10 +142,14 @@ fn motion_document(bytes: &[u8]) -> Option<Arc<crate::svg_motion::MotionDocument
         .then(|| usvg::decompress_svgz(bytes).ok())
         .flatten();
     let source = std::str::from_utf8(decompressed.as_deref().unwrap_or(bytes)).ok()?;
-    if !source.contains("animateMotion") {
+    if !source.contains("animateMotion") && !source.contains("@keyframes") {
         return None;
     }
-    let source = crate::svg_css::resolve_variables(source).unwrap_or_else(|| source.to_owned());
+    let source = if crate::svg_css::has_color_keyframes(source) {
+        source.to_owned()
+    } else {
+        crate::svg_css::resolve_variables(source).unwrap_or_else(|| source.to_owned())
+    };
     crate::svg_motion::MotionDocument::parse(source).map(Arc::new)
 }
 

@@ -70,6 +70,7 @@ regex = { workspace = true }
 resvg = { workspace = true }
 roxmltree = "0.21"
 simplecss = "0.2.2"
+svgtypes = { workspace = true }
 rustc-hash = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 rustls-pki-types = { workspace = true }

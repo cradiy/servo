@@ -115,6 +115,7 @@ impl PreparedMotion {
 pub(crate) struct MotionDocument {
     source: String,
     motions: Vec<Motion>,
+    color_keyframes: bool,
 }
 
 fn clock(value: &str) -> Option<f64> {
@@ -287,11 +288,16 @@ impl MotionDocument {
                 return None;
             }
         }
-        if motions.is_empty() {
+        let color_keyframes = crate::svg_css::has_color_keyframes(&source);
+        if motions.is_empty() && !color_keyframes {
             return None;
         }
         drop(document);
-        Some(Self { source, motions })
+        Some(Self {
+            source,
+            motions,
+            color_keyframes,
+        })
     }
 
     pub(crate) fn prepare(
@@ -300,8 +306,9 @@ impl MotionDocument {
         size: resvg::tiny_skia::IntSize,
         natural_size: resvg::tiny_skia::IntSize,
     ) -> Option<PreparedMotion> {
-        if self.motions.len() != 1 ||
-            size.width() as usize * size.height() as usize * 12 > 32 * 1024 * 1024
+        if self.color_keyframes
+            || self.motions.len() != 1
+            || size.width() as usize * size.height() as usize * 12 > 32 * 1024 * 1024
         {
             return None;
         }
@@ -432,7 +439,11 @@ impl MotionDocument {
         for (range, replacement) in edits {
             result.replace_range(range, &replacement);
         }
-        result
+        if self.color_keyframes {
+            crate::svg_css::sample_animations(&result, seconds).unwrap_or(result)
+        } else {
+            result
+        }
     }
 }
 

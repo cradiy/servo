@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use cssparser::{Parser, ToCss, Token};
 
+mod animation;
+
 const MAX_VALUE: usize = 1024 * 1024;
 
 fn expand(
@@ -183,6 +185,7 @@ fn resolve(
     result
 }
 
+#[derive(Clone)]
 struct Declaration {
     name: String,
     value: String,
@@ -351,7 +354,27 @@ fn escape(value: &str) -> String {
 }
 
 pub(crate) fn resolve_variables(text: &str) -> Option<String> {
-    if !text.contains("--") && !text.to_ascii_lowercase().contains("var(") {
+    resolve_at(text, None)
+}
+
+pub(crate) fn sample_animations(text: &str, seconds: f64) -> Option<String> {
+    resolve_at(text, Some(seconds))
+}
+
+pub(crate) fn has_color_keyframes(text: &str) -> bool {
+    roxmltree::Document::parse(text)
+        .ok()
+        .is_some_and(|document| {
+            document
+                .descendants()
+                .filter(|node| node.has_tag_name("style"))
+                .filter_map(|node| node.text())
+                .any(|css| !animation::parse(css).is_empty())
+        })
+}
+
+fn resolve_at(text: &str, seconds: Option<f64>) -> Option<String> {
+    if seconds.is_none() && !text.contains("--") && !text.to_ascii_lowercase().contains("var(") {
         return None;
     }
     let document = roxmltree::Document::parse(text).ok()?;
@@ -370,6 +393,7 @@ pub(crate) fn resolve_variables(text: &str) -> Option<String> {
     let sheet = cssparser::StyleSheetParser::new(&mut Parser::new(&css), &mut Rules)
         .filter_map(Result::ok)
         .collect::<Vec<_>>();
+    let keyframes = seconds.map(|_| animation::parse(&css)).unwrap_or_default();
     let mut computed: HashMap<roxmltree::NodeId, HashMap<String, String>> = HashMap::new();
     let mut edits = Vec::new();
     let mut size = text.len();
@@ -464,6 +488,32 @@ pub(crate) fn resolve_variables(text: &str) -> Option<String> {
                 &mut memo,
             ) {
                 variables.insert(name.clone(), value);
+            }
+        }
+        if let Some(seconds) = seconds {
+            let shorthand_rank = winners.get("animation").map(|(_, rank)| *rank);
+            let samples = animation::sample(
+                &keyframes,
+                seconds,
+                |name| {
+                    winners
+                        .get(name)
+                        .filter(|(_, rank)| {
+                            name == "animation"
+                                || shorthand_rank.is_none_or(|shorthand| *rank >= shorthand)
+                        })
+                        .map(|(value, _)| {
+                            expand(value, &mut |name| variables.get(name).cloned(), 0)
+                                .unwrap_or_default()
+                        })
+                },
+                |name| variables.get(name).cloned(),
+            );
+            for (name, value) in samples {
+                if winners.get(&name).is_some_and(|(_, rank)| rank.0) {
+                    continue;
+                }
+                winners.insert(name, (value, (false, true, [255; 3], usize::MAX)));
             }
         }
         let mut style = String::new();
