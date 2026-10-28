@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::Cell;
 use std::default::Default;
 
 use dom_struct::dom_struct;
@@ -16,6 +17,7 @@ use script_bindings::codegen::GenericBindings::ElementBinding::ScrollLogicalPosi
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::dom::UnrootedDom;
 use style::attr::AttrValue;
+use stylo_atoms::atom;
 use stylo_dom::ElementState;
 
 use crate::dom::activation::Activatable;
@@ -23,7 +25,8 @@ use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterData
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::{
     EventHandlerNonNull, OnErrorEventHandlerNonNull,
 };
-use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMethods;
+use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::{HTMLElementMethods, ShowPopoverOptions};
+use crate::dom::bindings::codegen::UnionTypes::TogglePopoverOptionsOrBoolean;
 use crate::dom::bindings::codegen::Bindings::HTMLLabelElementBinding::HTMLLabelElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLOrSVGOrMathMLElementBinding::FocusOptions;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::Node_Binding::NodeMethods;
@@ -31,6 +34,7 @@ use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::ShadowRoot_Bindi
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
+use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::characterdata::CharacterData;
@@ -50,7 +54,7 @@ use crate::dom::element::{
     AttributeMutation, CustomElementCreationMode, Element, ElementCreator,
     is_element_affected_by_legacy_background_presentational_hint,
 };
-use crate::dom::event::Event;
+use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::form_controls::input_type::InputType;
@@ -73,6 +77,7 @@ use crate::dom::node::{
 };
 use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::text::Text;
+use crate::dom::toggleevent::ToggleEvent;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 use crate::event_loop::script_thread::ScriptThread;
 
@@ -81,9 +86,119 @@ pub(crate) struct HTMLElement {
     element: Element,
     style_decl: MutNullableDom<CSSStyleDeclaration>,
     dataset: MutNullableDom<DOMStringMap>,
+    popover_changing: Cell<bool>,
+    popover_pending: Cell<Option<bool>>,
+    popover_source: MutNullableDom<Element>,
 }
 
 impl HTMLElement {
+    fn change_popover(
+        &self,
+        cx: &mut JSContext,
+        showing: bool,
+        source: Option<&Element>,
+    ) -> ErrorResult {
+        let Some(kind) = self.GetPopover() else {
+            return Err(Error::NotSupported(None));
+        };
+        if kind != "manual" {
+            return Err(Error::NotSupported(None));
+        }
+        let element = self.as_element();
+        if !self.upcast::<Node>().is_connected()
+            || !self.owner_document().is_fully_active()
+            || element
+                .state()
+                .intersects(ElementState::MODAL | ElementState::FULLSCREEN)
+        {
+            return Err(Error::InvalidState(None));
+        }
+        let was_showing = element.state().contains(ElementState::POPOVER_OPEN);
+        if was_showing == showing {
+            return Ok(());
+        }
+        if self.popover_changing.replace(true) {
+            return Err(Error::InvalidState(None));
+        }
+        let document = self.owner_document();
+        let event = ToggleEvent::new(
+            cx,
+            &self.owner_window(),
+            atom!("beforetoggle"),
+            EventBubbles::DoesNotBubble,
+            if showing {
+                EventCancelable::Cancelable
+            } else {
+                EventCancelable::NotCancelable
+            },
+            DOMString::from_static(if was_showing { "open" } else { "closed" }),
+            DOMString::from_static(if showing { "open" } else { "closed" }),
+            source,
+        );
+        let proceed = event
+            .upcast::<Event>()
+            .fire(cx, self.upcast::<EventTarget>());
+        self.popover_changing.set(false);
+        if !proceed {
+            return Ok(());
+        }
+        if self.GetPopover().is_none_or(|kind| kind != "manual")
+            || !self.upcast::<Node>().is_connected()
+            || self.owner_document() != document
+        {
+            return Err(Error::InvalidState(None));
+        }
+        if showing {
+            static NEXT_ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            element
+                .set_top_layer_order(NEXT_ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        } else {
+            element.set_top_layer_order(0);
+        }
+        element.set_state(cx.no_gc(), ElementState::POPOVER_OPEN, showing);
+        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+        if showing {
+            let node = self.upcast::<Node>();
+            rooted!(&in(cx) let mut target = if self.Autofocus() { node.get_the_focusable_area(cx, FocusTrigger::Other) } else { node.focus_delegate(cx, None) });
+            if target.is_some() {
+                self.owner_document()
+                    .focus_handler()
+                    .focus(cx, &target.take().unwrap());
+            }
+        }
+        self.queue_popover_toggle(was_showing, source);
+        Ok(())
+    }
+
+    fn queue_popover_toggle(&self, old: bool, source: Option<&Element>) {
+        self.popover_source.set(source);
+        if self.popover_pending.get().is_some() {
+            return;
+        }
+        self.popover_pending.set(Some(old));
+        let this = Trusted::new(self);
+        self.owner_global().task_manager().dom_manipulation_task_source().queue(task!(popover_toggle: move |cx| {
+            let this = this.root();
+            let Some(old) = this.popover_pending.take() else { return; };
+            let showing = this.as_element().state().contains(ElementState::POPOVER_OPEN);
+            let source = this.popover_source.get();
+            this.popover_source.set(None);
+            let event = ToggleEvent::new(cx, &this.owner_window(), atom!("toggle"), EventBubbles::DoesNotBubble,
+                EventCancelable::NotCancelable, DOMString::from_static(if old { "open" } else { "closed" }),
+                DOMString::from_static(if showing { "open" } else { "closed" }), source.as_deref());
+            event.upcast::<Event>().fire(cx, this.upcast::<EventTarget>());
+        }));
+    }
+
+    fn reset_popover(&self, cx: &mut JSContext) {
+        let element = self.as_element();
+        if element.state().contains(ElementState::POPOVER_OPEN) {
+            element.set_top_layer_order(0);
+            element.set_state(cx.no_gc(), ElementState::POPOVER_OPEN, false);
+            self.queue_popover_toggle(true, None);
+        }
+    }
+
     pub(crate) fn new_inherited(
         tag_name: LocalName,
         prefix: Option<Prefix>,
@@ -108,6 +223,9 @@ impl HTMLElement {
             ),
             style_decl: Default::default(),
             dataset: Default::default(),
+            popover_changing: Cell::new(false),
+            popover_pending: Cell::new(None),
+            popover_source: Default::default(),
         }
     }
 
@@ -262,6 +380,68 @@ impl HTMLElement {
 }
 
 impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
+    fn GetPopover(&self) -> Option<DOMString> {
+        self.as_element()
+            .get_attribute_string_value(&LocalName::from("popover"))
+            .map(|value| {
+                DOMString::from(if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+                    "auto"
+                } else if value.eq_ignore_ascii_case("hint") {
+                    "hint"
+                } else {
+                    "manual"
+                })
+            })
+    }
+
+    fn SetPopover(&self, cx: &mut JSContext, value: Option<DOMString>) {
+        let name = LocalName::from("popover");
+        if let Some(value) = value {
+            self.as_element().set_string_attribute(cx, &name, value);
+        } else {
+            self.as_element().remove_attribute(cx, &ns!(), &name);
+        }
+    }
+
+    fn ShowPopover(&self, cx: &mut JSContext, options: &ShowPopoverOptions) -> ErrorResult {
+        self.change_popover(
+            cx,
+            true,
+            options.source.as_deref().map(|s| s.upcast::<Element>()),
+        )
+    }
+
+    fn HidePopover(&self, cx: &mut JSContext) -> ErrorResult {
+        self.change_popover(cx, false, None)
+    }
+
+    fn TogglePopover(
+        &self,
+        cx: &mut JSContext,
+        options: TogglePopoverOptionsOrBoolean,
+    ) -> Fallible<bool> {
+        let (force, source) = match &options {
+            TogglePopoverOptionsOrBoolean::Boolean(value) => (Some(*value), None),
+            TogglePopoverOptionsOrBoolean::TogglePopoverOptions(options) => (
+                options.force,
+                options
+                    .parent
+                    .source
+                    .as_deref()
+                    .map(|s| s.upcast::<Element>()),
+            ),
+        };
+        let showing = self
+            .as_element()
+            .state()
+            .contains(ElementState::POPOVER_OPEN);
+        self.change_popover(cx, force.unwrap_or(!showing), source)?;
+        Ok(self
+            .as_element()
+            .state()
+            .contains(ElementState::POPOVER_OPEN))
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#the-style-attribute>
     fn Style(&self, cx: &mut JSContext) -> DomRoot<CSSStyleDeclaration> {
         self.style_decl.or_init(|| {
@@ -1349,6 +1529,12 @@ impl VirtualMethods for HTMLElement {
         self.super_type()
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
+        if attr.namespace() == &ns!()
+            && attr.local_name() == &LocalName::from("popover")
+            && self.GetPopover().is_none_or(|kind| kind != "manual")
+        {
+            self.reset_popover(cx);
+        }
         let element = self.as_element();
         match (attr.local_name(), mutation) {
             (&local_name!("accesskey"), ..) => {
@@ -1413,6 +1599,7 @@ impl VirtualMethods for HTMLElement {
     ///
     /// TODO: These are the node removal steps, so this should be done for all Nodes.
     fn unbind_from_tree(&self, cx: &mut js::context::JSContext, context: &UnbindContext) {
+        self.reset_popover(cx);
         // 1. Let document be removedNode's node document.
         let document = self.owner_document_unrooted(cx.no_gc());
 

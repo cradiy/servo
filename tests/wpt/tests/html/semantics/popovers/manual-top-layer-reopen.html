@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Manual popover top layer ordering across synchronous reopening</title>
+<link rel="help" href="https://html.spec.whatwg.org/multipage/popover.html">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #clipping-parent {
+    position: absolute; left: 370px; top: 230px;
+    width: 8px; height: 8px; overflow: hidden;
+    transform: translate(25px, 35px); opacity: 0.2;
+  }
+  #cover { position: fixed; inset: 0; z-index: 2147483647; background: red; }
+  [popover] {
+    position: fixed; inset: auto; left: 32px; top: 32px;
+    width: 160px; height: 120px; margin: 0; border: 0; padding: 0;
+    z-index: -1; background: green;
+  }
+</style>
+<div id="clipping-parent"><div id="earlier" popover="manual"></div></div>
+<div id="later" popover="manual"></div>
+<div id="cover"></div>
+<script>
+promise_test(async t => {
+  const earlier = document.querySelector('#earlier');
+  const later = document.querySelector('#later');
+  t.add_cleanup(() => { earlier.hidePopover(); later.hidePopover(); });
+  const paint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  earlier.showPopover();
+  await paint();
+  assert_equals(earlier.getBoundingClientRect().left, 32, 'Viewport positioning ignores the transformed ancestor');
+  assert_equals(document.elementFromPoint(64, 64), earlier, 'The top layer escapes ancestor clipping and covers page z-index');
+  later.showPopover();
+  await paint();
+  assert_equals(document.elementFromPoint(64, 64), later, 'Opening order determines stacking');
+  earlier.hidePopover();
+  earlier.showPopover();
+  await paint();
+  assert_equals(document.elementFromPoint(64, 64), earlier, 'Synchronous reopening updates stacking even when the final open state is unchanged');
+}, 'Manual popovers escape ancestor effects and update their layer order on reopening');
+</script>

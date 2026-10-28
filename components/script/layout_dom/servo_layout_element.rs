@@ -72,6 +72,17 @@ impl<'dom> From<LayoutDom<'dom, Element>> for ServoLayoutElement<'dom> {
     }
 }
 
+impl ServoLayoutElement<'_> {
+    /// The opening order of this element in its document top layer, or zero.
+    pub fn top_layer_order(&self) -> u64 {
+        if self.pseudo_element_chain.is_empty() {
+            self.element.top_layer_order_for_layout()
+        } else {
+            0
+        }
+    }
+}
+
 impl<'dom> LayoutElement<'dom> for ServoLayoutElement<'dom> {
     type ConcreteTypeBundle = ServoLayoutDomTypeBundle<'dom>;
 

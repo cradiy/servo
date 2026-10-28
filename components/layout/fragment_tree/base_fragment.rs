@@ -57,6 +57,9 @@ pub(crate) struct BaseFragment {
     /// layout.
     pub flags: FragmentFlags,
 
+    /// Opening order in the top layer; zero for ordinary fragments.
+    pub top_layer_order: u64,
+
     /// The content rect of this fragment in the parent fragment's content rectangle. This
     /// does not include padding, border, or margin -- it only includes content.
     rect: SyncPhysicalRectAu,
@@ -84,6 +87,7 @@ impl BaseFragment {
         Self {
             tag: base_fragment_info.tag,
             flags: base_fragment_info.flags,
+            top_layer_order: base_fragment_info.top_layer_order,
             rect: SyncPhysicalRectAu::new(rect),
             status: AtomicU8::new(FragmentStatus::New as u8),
         }
@@ -131,6 +135,9 @@ pub(crate) struct BaseFragmentInfo {
 
     /// The flags to use for the new BaseFragment.
     pub flags: FragmentFlags,
+
+    /// Opening order in the top layer; zero for ordinary fragments.
+    pub top_layer_order: u64,
 }
 
 impl BaseFragmentInfo {
@@ -138,6 +145,7 @@ impl BaseFragmentInfo {
         Self {
             tag: None,
             flags: FragmentFlags::empty(),
+            top_layer_order: 0,
         }
     }
 
@@ -148,6 +156,7 @@ impl BaseFragmentInfo {
                 pseudo_element_chain: Default::default(),
             }),
             flags: FragmentFlags::empty(),
+            top_layer_order: 0,
         }
     }
 
@@ -188,6 +197,7 @@ impl From<ServoLayoutNode<'_>> for BaseFragmentInfo {
             return Self {
                 tag: Some(node.into()),
                 flags,
+                top_layer_order: 0,
             };
         }
 
@@ -243,6 +253,9 @@ impl From<ServoLayoutNode<'_>> for BaseFragmentInfo {
         Self {
             tag: Some(node.into()),
             flags,
+            top_layer_order: node
+                .as_element()
+                .map_or(0, |element| element.top_layer_order()),
         }
     }
 }

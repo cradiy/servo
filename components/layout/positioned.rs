@@ -231,10 +231,12 @@ impl PositioningContext {
             style.establishes_containing_block_for_absolute_descendants(fragment.base.flags)
         );
         if style.establishes_containing_block_for_all_descendants(fragment.base.flags) {
-            self.absolutes.clear();
-        } else {
             self.absolutes
-                .retain(|hoisted_box| hoisted_box.position() == Position::Fixed);
+                .retain(|hoisted_box| hoisted_box.is_top_layer());
+        } else {
+            self.absolutes.retain(|hoisted_box| {
+                hoisted_box.is_top_layer() || hoisted_box.position() == Position::Fixed
+            });
         }
     }
 
@@ -250,15 +252,18 @@ impl PositioningContext {
         );
 
         if style.establishes_containing_block_for_all_descendants(new_fragment.base.flags) {
-            boxes_to_layout_out.append(&mut self.absolutes);
+            let (mut regular, mut top): (Vec<_>, Vec<_>) =
+                self.absolutes.drain(..).partition(|b| !b.is_top_layer());
+            boxes_to_layout_out.append(&mut regular);
+            boxes_to_continue_hoisting_out.append(&mut top);
             return;
         }
 
         // TODO: This could potentially use `extract_if` when that is stabilized.
-        let (mut boxes_to_layout, mut boxes_to_continue_hoisting) = self
-            .absolutes
-            .drain(..)
-            .partition(|hoisted_box| hoisted_box.position() != Position::Fixed);
+        let (mut boxes_to_layout, mut boxes_to_continue_hoisting) =
+            self.absolutes.drain(..).partition(|hoisted_box| {
+                !hoisted_box.is_top_layer() && hoisted_box.position() != Position::Fixed
+            });
         boxes_to_layout_out.append(&mut boxes_to_layout);
         boxes_to_continue_hoisting_out.append(&mut boxes_to_continue_hoisting);
     }
@@ -399,6 +404,16 @@ impl Zero for PositioningContextLength {
 }
 
 impl HoistedAbsolutelyPositionedBox {
+    fn is_top_layer(&self) -> bool {
+        self.absolutely_positioned_box
+            .borrow()
+            .context
+            .base
+            .base_fragment_info
+            .top_layer_order
+            != 0
+    }
+
     fn position(&self) -> Position {
         let position = self
             .absolutely_positioned_box

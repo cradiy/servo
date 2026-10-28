@@ -445,3 +445,20 @@ input:is([type=color], [type=range], [type=reset], [type=button], [type=submit])
 {
   user-select: none;
 }
+
+[popover]:not(:popover-open) {
+  display: none !important;
+}
+
+:popover-open {
+  -servo-top-layer: auto !important;
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: fit-content;
+  height: fit-content;
+  border: solid;
+  padding: 0.25em;
+  background-color: Canvas;
+  color: CanvasText;
+}

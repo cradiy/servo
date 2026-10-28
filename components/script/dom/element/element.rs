@@ -218,6 +218,7 @@ pub struct Element {
     class_list: MutNullableDom<DOMTokenList>,
     #[no_trace]
     state: Cell<ElementState>,
+    top_layer_order: Cell<u64>,
     /// These flags are set by the style system to indicate the that certain
     /// operations may require restyling this element or its descendants.
     selector_flags: AtomicUsize,
@@ -335,10 +336,15 @@ impl Element {
             attr_list: Default::default(),
             class_list: Default::default(),
             state: Cell::new(state),
+            top_layer_order: Cell::new(0),
             selector_flags: Default::default(),
             rare_data: Default::default(),
             style_data: Default::default(),
         }
+    }
+
+    pub(crate) fn set_top_layer_order(&self, order: u64) {
+        self.top_layer_order.set(order);
     }
 
     pub(crate) fn set_had_duplicate_attributes(&self, no_gc: &NoGC) {
@@ -1737,6 +1743,10 @@ impl<'dom> LayoutDom<'dom, Element> {
     }
 
     #[inline]
+    pub(crate) fn top_layer_order_for_layout(self) -> u64 {
+        self.unsafe_get().top_layer_order.get()
+    }
+
     pub(crate) fn get_state_for_layout(self) -> ElementState {
         (self.unsafe_get()).state.get()
     }

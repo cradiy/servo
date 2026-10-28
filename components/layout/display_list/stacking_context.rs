@@ -275,6 +275,22 @@ impl StackingContextTree {
         }
 
         root_stacking_context.sort();
+        let mut top_layer = fragment_tree
+            .root_fragments
+            .iter()
+            .filter_map(|f| f.retrieve_box_fragment())
+            .filter(|f| f.base.top_layer_order != 0)
+            .map(|f| f.clone())
+            .collect::<Vec<_>>();
+        top_layer.sort_by_key(|f| f.base.top_layer_order);
+        for fragment in top_layer {
+            fragment.build_stacking_context_tree(
+                &mut stacking_context_tree,
+                &containing_block_info,
+                &mut root_stacking_context,
+                &StackingContextParentInfo::default(),
+            );
+        }
         stacking_context_tree.root_stacking_context = root_stacking_context;
 
         if debug.is_enabled(DiagnosticsLoggingOption::StackingContextTree) {
@@ -498,9 +514,13 @@ impl StackingContext {
         reference_frame_info: Option<StackingContextReferenceFrameInfo>,
         parent_info: &StackingContextParentInfo,
     ) -> Self {
-        let z_index = initializing_fragment
-            .style()
-            .effective_z_index(initializing_fragment.base.flags);
+        let z_index = if initializing_fragment.base.top_layer_order != 0 {
+            i32::MAX
+        } else {
+            initializing_fragment
+                .style()
+                .effective_z_index(initializing_fragment.base.flags)
+        };
         Self {
             fragment: StackingContextFragments::Fragment(initializing_fragment),
             context_type,
@@ -596,6 +616,9 @@ impl Fragment {
                     _ => unreachable!("Found hoisted box with missing or non-BoxFragment."),
                 };
 
+                if box_fragment.base.top_layer_order != 0 {
+                    return;
+                }
                 box_fragment.build_stacking_context_tree(
                     stacking_context_tree,
                     containing_block_info,
@@ -635,7 +658,7 @@ impl BoxFragment {
     pub(crate) fn stacking_context_type(&self) -> Option<StackingContextType> {
         let flags = self.base.flags;
         let style = self.style();
-        if style.establishes_stacking_context(flags) {
+        if self.base.top_layer_order != 0 || style.establishes_stacking_context(flags) {
             return Some(StackingContextType::StackingContext);
         }
 
