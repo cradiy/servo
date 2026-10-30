@@ -184,7 +184,7 @@ impl HTMLTextAreaElement {
                     input_method_type: InputMethodType::Text,
                     text: String::from(self.Value()),
                     insertion_point: self.GetSelectionEnd(),
-                    multiline: false,
+                    multiline: true,
                     // We follow chromium's heuristic to show the virtual keyboard only if user had interacted before.
                     allow_virtual_keyboard: self.owner_window().has_sticky_activation(),
                 }),
@@ -334,8 +334,8 @@ impl TextControlElement for HTMLTextAreaElement {
     fn handle_key_reaction(&self, cx: &mut JSContext, action: KeyReaction) {
         match action {
             KeyReaction::TriggerDefaultAction => (),
-            KeyReaction::DispatchInput(text, is_composing, input_type) => {
-                self.queue_input_event(text, is_composing, input_type);
+            KeyReaction::DispatchInput(text, input_type) => {
+                self.queue_input_event(text, input_type);
                 self.value_dirty.set(true);
                 self.handle_text_content_changed(cx);
                 self.maybe_update_shared_selection();

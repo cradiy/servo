@@ -1572,7 +1572,7 @@ impl Document {
         indicated_part.run_the_focusing_steps(
             cx,
             Some(FocusableArea::Viewport),
-            FocusTrigger::Other,
+            FocusTrigger::Script,
         );
 
         // Step 3.7. Move the sequential focus navigation starting point to target.
@@ -6931,7 +6931,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
         names_with_first_named_element_vec
             .into_iter()
-            .map(|(k, _)| DOMString::from(&*k))
+            .map(|(k, _)| TracedDOMString::from(k).root())
             .collect()
     }
 

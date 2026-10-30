@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use cssparser::{Parser, ToCss, Token};
 
+#[path = "svg_css/animation.rs"]
 mod animation;
 
 const MAX_VALUE: usize = 1024 * 1024;

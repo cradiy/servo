@@ -275,6 +275,7 @@ impl DisplayListBuilder<'_> {
                 fragment_builder.border_rect,
                 fragment_builder.border_radius(),
             ),
+            Clip::Text => unreachable!("text is not a valid mask-clip value"),
         };
         let radii = [
             radii.top_left,

@@ -192,6 +192,13 @@
       ]
      ]
     },
+    "webgpu-opaque-origin-crash.html": [
+     "42cf5e66c8d1efdc4d4a345b5d27c54dd0ba3f0e",
+     [
+      null,
+      {}
+     ]
+    ],
     "window-resizeTo-not-permitted-crash.html": [
      "7b6a67ff81436a91048bdb627f303f7fab2762f7",
      [
@@ -13873,6 +13880,13 @@
       null,
       {}
      ]
+    ],
+    "playing_media_no_gc.html": [
+     "fe103c52d292fad241451699f3b7d123c4db593e",
+     [
+      null,
+      {}
+     ]
     ]
    },
    "mozilla": {
@@ -14810,7 +14824,7 @@
      ]
     ],
     "interfaces.https.html": [
-     "7493dec90e794faca202fda4edea9022e6262925",
+     "6b86f9d8491d53915833b10c5c921a356fe8c7f1",
      [
       null,
       {}
@@ -15173,13 +15187,6 @@
     ],
     "partial-shadow-dom.html": [
      "74e308f94036a6dbf5c4223cd3d229f49ffceb4e",
-     [
-      null,
-      {}
-     ]
-    ],
-    "playing_media_no_gc.html": [
-     "1f85584105b2db10ba72ebb34fc44bb5fa7c0a6e",
      [
       null,
       {}

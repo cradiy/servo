@@ -1082,8 +1082,8 @@ impl TextControlElement for HTMLInputElement {
             KeyReaction::TriggerDefaultAction => {
                 self.implicit_submission(cx);
             },
-            KeyReaction::DispatchInput(text, is_composing, input_type) => {
-                self.queue_input_event(text, is_composing, input_type);
+            KeyReaction::DispatchInput(text, input_type) => {
+                self.queue_input_event(text, input_type);
                 self.value_dirty.set(true);
                 self.update_placeholder_shown_state(cx.no_gc());
                 self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
@@ -2162,7 +2162,11 @@ impl HTMLInputElement {
     fn handle_focus_event(&self, cx: &mut JSContext, event: &FocusEvent) {
         let event_type = event.upcast::<Event>().type_();
         let document = self.owner_document();
-        if *event_type == *"blur" {
+
+        // This hides the control if the input element has lost focus, but doesn't do this for
+        // file selection dialogs, which are often modal dialogs that may be represented as
+        // separate windows.
+        if *event_type == *"blur" && !matches!(&*self.input_type(), InputType::File(..)) {
             document
                 .embedder_controls()
                 .hide_embedder_control(self.upcast());
@@ -2348,7 +2352,7 @@ impl VirtualMethods for HTMLInputElement {
                 self.update_checked_state(cx.no_gc());
                 self.update_indeterminate_state(cx.no_gc());
                 if element.focus_state() {
-                    element.set_focusring_state(cx.no_gc(), self.focus_visible_applies());
+                    element.set_focusring_state(cx.no_gc(), self.is_textual_or_password());
                 }
             },
             local_name!("value") if !self.value_dirty.get() => {
@@ -2553,16 +2557,6 @@ impl VirtualMethods for HTMLInputElement {
                 .unwrap()
                 .attribute_affects_presentational_hints(attr),
         }
-    }
-
-    /// <https://drafts.csswg.org/selectors/#the-focus-visible-pseudo>
-    fn focus_visible_applies(&self) -> bool {
-        // > If the element supports keyboard input (such as an input element,
-        // > or any other element that would triggers a virtual keyboard
-        // > to be shown on focus if a physical keyboard were not present), indicate focus.
-        // It is implementation-defined, but WPT tests expect it to be applied to textual
-        // input elements
-        self.is_textual_or_password()
     }
 }
 

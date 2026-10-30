@@ -159,11 +159,13 @@ impl HTMLElement {
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
         if showing {
             let node = self.upcast::<Node>();
-            rooted!(&in(cx) let mut target = if self.Autofocus() { node.get_the_focusable_area(cx, FocusTrigger::Other) } else { node.focus_delegate(cx, None) });
+            rooted!(&in(cx) let mut target = if self.Autofocus() { node.get_the_focusable_area(cx, FocusTrigger::Script) } else { node.focus_delegate(cx, None) });
             if target.is_some() {
-                self.owner_document()
-                    .focus_handler()
-                    .focus(cx, &target.take().unwrap());
+                self.owner_document().focus_handler().focus(
+                    cx,
+                    &target.take().unwrap(),
+                    FocusTrigger::Script,
+                );
             }
         }
         self.queue_popover_toggle(was_showing, source);
@@ -746,7 +748,7 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
         // 2. Run the focusing steps for this.
         if !self
             .upcast::<Node>()
-            .run_the_focusing_steps(cx, None, FocusTrigger::Other)
+            .run_the_focusing_steps(cx, None, FocusTrigger::Script)
         {
             // The specification seems to imply we should scroll into view even if this element
             // is not a focusable area. No browser does this, so we return early in that case.
@@ -784,9 +786,11 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
             return;
         }
         // <https://html.spec.whatwg.org/multipage/#unfocusing-steps>
-        self.owner_document()
-            .focus_handler()
-            .focus(cx, &FocusableArea::Viewport);
+        self.owner_document().focus_handler().focus(
+            cx,
+            &FocusableArea::Viewport,
+            FocusTrigger::Script,
+        );
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-scrollparent>
