@@ -11,7 +11,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::{Request as HyperRequest, Response as HyperResponse};
 use net::test_util::{make_body, make_server};
-use servo::{CacheEntry, WebViewBuilder};
+use servo::{CacheEntry, NetworkManager, WebViewBuilder};
 
 use crate::common::{ServoTest, WebViewDelegateImpl, evaluate_javascript};
 
@@ -78,24 +78,28 @@ fn test_clear_cache() {
 
     let delegate = Rc::new(WebViewDelegateImpl::default());
 
-    let _webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
         .delegate(delegate.clone())
-        .url(url.as_url().clone())
         .build();
-
-    servo_test.spin(move || !delegate.url_changed.get());
-
-    let _ = server.close();
+    let initial_delegate = delegate.clone();
+    servo_test.spin(move || !initial_delegate.load_status_changed.get());
 
     let network_manager = servo_test.servo().network_manager();
+    for clear in [
+        NetworkManager::clear_cache,
+        NetworkManager::request_cache_clear,
+    ] {
+        delegate.reset();
+        webview.load(url.as_url().clone());
+        let loaded_delegate = delegate.clone();
+        servo_test.spin(move || !loaded_delegate.load_status_changed.get());
+        assert_eq!(network_manager.cache_entries().len(), 1);
 
-    let cache_entries = network_manager.cache_entries();
-    assert_eq!(cache_entries.len(), 1);
+        clear(&network_manager);
+        assert!(network_manager.cache_entries().is_empty());
+    }
 
-    network_manager.clear_cache();
-
-    let cache_entries = network_manager.cache_entries();
-    assert_eq!(cache_entries.len(), 0);
+    let _ = server.close();
 }
 
 #[test]

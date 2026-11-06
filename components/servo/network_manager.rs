@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use net_traits::ResourceThreads;
+use net_traits::{CoreResourceMsg, ResourceThreads};
 use servo_constellation_traits::EmbedderToConstellationMessage;
 
 use crate::proxies::ConstellationProxy;
@@ -81,6 +81,17 @@ impl NetworkManager {
     pub fn clear_cache(&self) {
         self.public_resource_threads.clear_cache();
         self.private_resource_threads.clear_cache();
+    }
+
+    /// Requests clearing public and private HTTP caches without waiting for completion.
+    /// Cookies and other site data are retained. Requests already in flight can refill the cache.
+    pub fn request_cache_clear(&self) {
+        for threads in [
+            &self.public_resource_threads,
+            &self.private_resource_threads,
+        ] {
+            let _ = threads.core_thread.send(CoreResourceMsg::ClearCache(None));
+        }
     }
 
     /// Set the network online state. This controls the value of [`navigator.onLine`]
