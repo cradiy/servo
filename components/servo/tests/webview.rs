@@ -407,6 +407,42 @@ fn test_cursor_change() {
     assert_eq!(webview.cursor(), Cursor::Default);
 }
 
+#[test]
+fn test_automatic_text_cursor_respects_selection_policy() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse(concat!(
+            "data:text/html,<!doctype html><style>",
+            "body{margin:0;font:24px monospace}section{height:50px}",
+            "aside{user-select:none}</style>",
+            "<section>Selectable</section><aside><section>Disabled</section>",
+            "<section style='cursor:pointer'>Action</section>",
+            "<section style='cursor:text'>Explicit</section>",
+            "<section style='user-select:text'>Restored</section></aside>",
+            "<section style='cursor:crosshair'>Target</section>",
+        )).unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+
+    for (row, expected) in [
+        Cursor::Text,
+        Cursor::Default,
+        Cursor::Pointer,
+        Cursor::Text,
+        Cursor::Text,
+        Cursor::Crosshair,
+    ].into_iter().enumerate() {
+        delegate.reset();
+        webview.notify_input_event(InputEvent::MouseMove(MouseMoveEvent::new(
+            DevicePoint::new(8., row as f32 * 50. + 12.).into(),
+        )));
+        servo_test.spin(|| delegate.input_event_result.borrow().is_none());
+        assert_eq!(webview.cursor(), expected, "row {row}");
+    }
+}
+
 // A test to ensure that the cursor doesn't change when hovering over a input with type color
 #[test]
 fn test_cursor_unchanged_input_color() {

@@ -302,6 +302,7 @@ impl Fragment {
                     node: tag.node,
                     point_in_target,
                     cursor: cursor(style.get_inherited_ui().cursor.keyword, auto_cursor),
+                    cursor_is_auto: style.get_inherited_ui().cursor.keyword == CursorKind::Auto,
                 });
 
                 // Selection boundaries cannot intersect generated content, which is what

@@ -25,7 +25,7 @@ use cssparser::SourceLocation;
 use dom_struct::dom_struct;
 use embedder_traits::user_contents::UserScript;
 use embedder_traits::{
-    AlertResponse, ConfirmResponse, EmbedderMsg, LoadStatus, PromptResponse, ScriptToEmbedderChan,
+    AlertResponse, ConfirmResponse, Cursor, EmbedderMsg, LoadStatus, PromptResponse, ScriptToEmbedderChan,
     SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails, WebDriverLoadStatus,
 };
 use euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
@@ -181,7 +181,7 @@ use crate::dom::performanceresourcetiming::InitiatorType;
 use crate::dom::promise::RootedPromise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
-use crate::dom::selection::Selection;
+use crate::dom::selection::{Selection, UsedUserSelect};
 use crate::dom::selection_range::RootedSelectionBoundary;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
 use crate::dom::shadowroot::shadowroot::ShadowRoot;
@@ -3506,12 +3506,21 @@ impl Window {
             let address = UntrustedNodeAddress(node.0 as *const c_void);
             unsafe { from_untrusted_node_address(address) }
         };
+        let node = from_opaque_node(item.node);
+        let cursor = if item.cursor_is_auto &&
+            item.cursor == Cursor::Text &&
+            node.used_user_select(cx.no_gc(), &mut FxHashMap::default()) == UsedUserSelect::None
+        {
+            Cursor::Default
+        } else {
+            item.cursor
+        };
         Some(HitTestResult {
-            node: from_opaque_node(item.node),
+            node,
             dom_position_for_selection: result.dom_position_for_selection.map(|(node, offset)| {
                 RootedSelectionBoundary::new_with_utf32_offset(from_opaque_node(node), offset)
             }),
-            cursor: item.cursor,
+            cursor,
             point_in_node: item.point_in_target,
             point_in_frame,
             point_relative_to_initial_containing_block,

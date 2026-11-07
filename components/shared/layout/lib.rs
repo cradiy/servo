@@ -1034,6 +1034,8 @@ pub struct HitTestResultItem {
     /// The [`Cursor`] that's defined on the item that is hit by this
     /// hit test result.
     pub cursor: Cursor,
+    /// Whether the cursor was chosen automatically from the fragment type.
+    pub cursor_is_auto: bool,
 }
 
 #[derive(Debug, Default, MallocSizeOf)]
