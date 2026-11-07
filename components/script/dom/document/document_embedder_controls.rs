@@ -9,7 +9,7 @@ use std::cell::Cell;
 use embedder_traits::{
     ClipboardAction, ContextMenuAction, ContextMenuElementInformation,
     ContextMenuElementInformationFlags, ContextMenuItem, ContextMenuRequest, EmbedderControlId,
-    EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg,
+    EmbedderControlRequest, EmbedderControlResponse, EmbedderMsg, WebViewRect,
 };
 use euclid::{Point2D, Rect, Size2D};
 use js::context::JSContext;
@@ -26,7 +26,7 @@ use script_bindings::root::{Dom, DomRoot};
 use servo_base::Epoch;
 use servo_base::generic_channel::GenericSend;
 use servo_url::ServoUrl;
-use webrender_api::units::{DeviceIntRect, DevicePoint};
+use webrender_api::units::DevicePoint;
 
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::trace::NoTrace;
@@ -108,7 +108,9 @@ impl DocumentEmbedderControls {
     ) -> EmbedderControlId {
         let id = self.next_control_id();
         let rect = point
-            .map(|point| DeviceIntRect::from_origin_and_size(point.to_i32(), Size2D::zero()))
+            .map(|point| {
+                WebViewRect::Device(euclid::Box2D::from_origin_and_size(point, Size2D::zero()))
+            })
             .unwrap_or_else(|| {
                 let rect = element
                     .node()
@@ -117,13 +119,11 @@ impl DocumentEmbedderControls {
                     .unwrap_or_default();
 
                 let rect = Rect::new(
-                    Point2D::new(rect.origin.x.to_px(), rect.origin.y.to_px()),
-                    Size2D::new(rect.size.width.to_px(), rect.size.height.to_px()),
+                    Point2D::new(rect.origin.x.to_f32_px(), rect.origin.y.to_f32_px()),
+                    Size2D::new(rect.size.width.to_f32_px(), rect.size.height.to_f32_px()),
                 );
 
-                // FIXME: This is a CSS pixel rect relative to this frame, we need a DevicePixel rectangle
-                // relative to the entire WebView!
-                DeviceIntRect::from_untyped(&rect.to_box2d())
+                WebViewRect::Page(rect.to_box2d())
             });
 
         self.visible_elements
@@ -138,7 +138,7 @@ impl DocumentEmbedderControls {
         &self,
         request: EmbedderControlRequest,
         id: EmbedderControlId,
-        rect: DeviceIntRect,
+        rect: WebViewRect,
     ) {
         match request {
             EmbedderControlRequest::SelectElement(..) |

@@ -257,6 +257,7 @@ impl DisplayListBuilder<'_> {
 
         // Clear any caret color from previous display list constructions.
         builder.paint_info.caret_property_binding = None;
+        builder.paint_info.iframe_positions.clear();
 
         builder.add_all_spatial_nodes();
 
@@ -898,6 +899,10 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
         let rect = fragment.base.rect().translate(state.origin.to_vector());
         let common = self.common_properties(state, rect.to_webrender(), &style);
+        self.paint_info.iframe_positions.insert(
+            fragment.pipeline_id.into(),
+            (state.spatial_id, rect.to_webrender().min.to_vector()),
+        );
         self.wr().push_iframe(
             rect.to_webrender(),
             common.clip_rect,

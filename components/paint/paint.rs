@@ -695,6 +695,18 @@ impl Paint {
         }
     }
 
+    /// Map a pipeline viewport rectangle into WebView device coordinates.
+    pub fn pipeline_viewport_rect_to_device(
+        &self,
+        webview_id: WebViewId,
+        pipeline_id: PipelineId,
+        rect: euclid::Box2D<f32, CSSPixel>,
+    ) -> Option<webrender_api::units::DeviceRect> {
+        self.maybe_painter(webview_id.into())?
+            .webview_renderer(webview_id)?
+            .pipeline_viewport_rect_to_device(pipeline_id, rect)
+    }
+
     pub fn add_webview(&self, webview: Box<dyn WebViewTrait>, viewport_details: ViewportDetails) {
         self.painter_mut(webview.id().into())
             .add_webview(webview, viewport_details);

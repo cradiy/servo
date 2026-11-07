@@ -7,11 +7,12 @@ use std::collections::VecDeque;
 use euclid::Scale;
 use paint_api::display_list::{PaintTimingInfo, ScrollTree};
 use paint_api::{CompositionPipeline, PipelineExitSource};
+use rustc_hash::FxHashMap;
 use servo_base::Epoch;
-use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId};
+use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId, ScrollTreeNodeId};
 use style_traits::CSSPixel;
 use webrender_api::Epoch as WebRenderEpoch;
-use webrender_api::units::DevicePixel;
+use webrender_api::units::{DevicePixel, LayoutVector2D};
 
 use crate::painter::PaintMetricState;
 use crate::web_content_animation::PipelineAnimations;
@@ -38,6 +39,9 @@ pub(crate) struct PipelineDetails {
     /// The `Paint`-side [ScrollTree]. This is used to allow finding and scrolling
     /// nodes in `Paint` before forwarding new offsets to WebRender.
     pub scroll_tree: ScrollTree,
+
+    /// Child pipeline origins and spatial nodes from the latest display list.
+    pub iframe_positions: FxHashMap<webrender_api::PipelineId, (ScrollTreeNodeId, LayoutVector2D)>,
 
     /// The paint metric status of the first paint.
     pub first_paint_metric: PaintMetricState,
@@ -95,6 +99,7 @@ impl PipelineDetails {
             animation_callbacks_running: false,
             throttled: false,
             scroll_tree: ScrollTree::default(),
+            iframe_positions: Default::default(),
             first_paint_metric: PaintMetricState::Waiting,
             first_contentful_paint_metric: PaintMetricState::Waiting,
             lcp_candidates: VecDeque::new(),

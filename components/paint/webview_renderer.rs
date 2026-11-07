@@ -1216,6 +1216,31 @@ impl WebViewRenderer {
         }
     }
 
+    pub(crate) fn pipeline_viewport_rect_to_device(
+        &self,
+        mut pipeline_id: PipelineId,
+        rect: euclid::Box2D<f32, CSSPixel>,
+    ) -> Option<DeviceRect> {
+        let mut transform = LayoutTransform::identity();
+        while Some(pipeline_id) != self.root_pipeline_id {
+            let parent_id = self.pipelines.get(&pipeline_id)?.parent_pipeline_id?;
+            let parent = self.pipelines.get(&parent_id)?;
+            let (spatial_id, origin) = parent.iframe_positions.get(&pipeline_id.into())?;
+            let parent_transform = parent
+                .scroll_tree
+                .cumulative_node_to_root_transform(*spatial_id);
+            let origin = *origin + parent.scroll_tree.reference_frame_offset(*spatial_id).to_vector();
+            transform = transform
+                .then_translate(origin.to_3d())
+                .then(&parent_transform.to_transform());
+            pipeline_id = parent_id;
+        }
+        transform
+            .then(&self.root_transform())
+            .outer_transformed_box2d(&rect.cast_unit())
+            .map(|rect| rect.cast_unit())
+    }
+
     /// Get the transform from page to device pixels of this [`WebViewRenderer`]
     /// incorporating the device pixel ratio, page zoom, and pinch zoom.
     pub(crate) fn root_transform(&self) -> LayoutTransform {

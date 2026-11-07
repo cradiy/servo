@@ -408,6 +408,61 @@ fn test_cursor_change() {
 }
 
 #[test]
+fn test_iframe_input_method_device_geometry() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .hidpi_scale_factor(euclid::Scale::new(1.5))
+        .url(
+            Url::parse(concat!(
+                "data:text/html,<!doctype html><style>body{margin:0;height:2200px}",
+                "iframe{position:absolute;left:120px;top:180px;width:240px;height:180px;",
+                "border:7px solid;transform:scale(1.25);transform-origin:0 0}</style>",
+                "<iframe srcdoc=\"&lt;style&gt;body{margin:0;height:1600px}",
+                "input{position:absolute;left:36px;top:90px;width:120px;height:28px;",
+                "box-sizing:border-box}&lt;/style&gt;&lt;input&gt;\"></iframe>",
+            ))
+            .unwrap(),
+        )
+        .build();
+    webview.resize(PhysicalSize::new(750, 750));
+    webview.show();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        concat!(
+            "const frame=document.querySelector('iframe');",
+            "window.scrollTo(0,40);frame.contentWindow.scrollTo(0,30);",
+            "requestAnimationFrame(()=>requestAnimationFrame(()=>",
+            "frame.contentDocument.querySelector('input').focus()));",
+        ),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    servo_test.spin(|| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Input method request timed out"
+        );
+        webview.paint_if_ready();
+        delegate.controls_shown.borrow().is_empty()
+    });
+    let controls = delegate.controls_shown.borrow();
+    let EmbedderControl::InputMethod(control) = &controls[0] else {
+        panic!("Expected an input method request");
+    };
+    let rect = control.position();
+    for (actual, expected) in [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
+        .into_iter()
+        .zip([260, 335, 485, 388])
+    {
+        assert!((actual - expected).abs() <= 1, "{actual} != {expected}");
+    }
+}
+
+#[test]
 fn test_automatic_text_cursor_respects_selection_policy() {
     let servo_test = ServoTest::new();
     let delegate = Rc::new(WebViewDelegateImpl::default());

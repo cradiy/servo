@@ -1030,6 +1030,9 @@ pub struct PaintDisplayListInfo {
     /// display list.
     pub scroll_tree: ScrollTree,
 
+    /// Child pipeline origins and spatial nodes in this display list.
+    pub iframe_positions: FxHashMap<PipelineId, (ScrollTreeNodeId, LayoutVector2D)>,
+
     /// The `ScrollTreeNodeId` of the root reference frame of this info's scroll
     /// tree.
     pub root_reference_frame_id: ScrollTreeNodeId,
@@ -1107,6 +1110,7 @@ impl PaintDisplayListInfo {
             content_size,
             epoch,
             scroll_tree,
+            iframe_positions: Default::default(),
             root_reference_frame_id,
             root_scroll_node_id,
             first_reflow,

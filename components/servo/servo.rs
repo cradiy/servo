@@ -253,6 +253,12 @@ pub struct PendingHandledInputEvent {
     pub webview_id: WebViewId,
 }
 
+struct PendingEmbedderControl {
+    id: EmbedderControlId,
+    position: WebViewRect,
+    request: EmbedderControlRequest,
+}
+
 struct ServoInner {
     delegate: RefCell<Rc<dyn ServoDelegate>>,
     paint: Rc<RefCell<Paint>>,
@@ -281,6 +287,7 @@ struct ServoInner {
     /// [`InputEventId`]s that have been handled, but for which the embedder has
     /// not been notified yet.
     pending_handled_input_events: RefCell<Vec<PendingHandledInputEvent>>,
+    pending_embedder_controls: RefCell<Vec<PendingEmbedderControl>>,
     /// An [`EventLoopWaker`] used to wake up the main embedder event loop.
     event_loop_waker: Box<dyn EventLoopWaker>,
     /// Geolocation watches that have been handed to a GeolocationDelegate grouped by the pipeline
@@ -390,6 +397,7 @@ impl ServoInner {
         }
 
         self.paint.borrow_mut().perform_updates();
+        self.show_pending_embedder_controls();
         self.resend_accessibility_root_nodes_for_viewport_changes();
         self.send_new_frame_ready_messages();
         self.handle_delegate_errors();
@@ -400,6 +408,28 @@ impl ServoInner {
         }
 
         true
+    }
+
+    fn show_pending_embedder_controls(&self) {
+        let pending = std::mem::take(&mut *self.pending_embedder_controls.borrow_mut());
+        for control in pending {
+            let Some(webview) = self.get_webview_handle(control.id.webview_id) else {
+                continue;
+            };
+            let position = match control.position {
+                WebViewRect::Device(rect) => Some(rect),
+                WebViewRect::Page(rect) => self.paint.borrow().pipeline_viewport_rect_to_device(
+                    control.id.webview_id,
+                    control.id.pipeline_id,
+                    rect,
+                ),
+            };
+            let Some(position) = position else {
+                self.pending_embedder_controls.borrow_mut().push(control);
+                continue;
+            };
+            webview.show_embedder_control(control.id, position.round_out().to_i32(), control.request);
+        }
     }
 
     /// Resend the root accessibility node for any [`WebView`] whose viewport geometry changed
@@ -794,12 +824,19 @@ impl ServoInner {
                     None => self.delegate.borrow().show_console_message(level, message),
                 }
             },
-            EmbedderMsg::ShowEmbedderControl(control_id, position, embedder_control_request) => {
-                if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
-                    webview.show_embedder_control(control_id, position, embedder_control_request);
-                }
+            EmbedderMsg::ShowEmbedderControl(id, position, request) => {
+                self.pending_embedder_controls
+                    .borrow_mut()
+                    .push(PendingEmbedderControl {
+                        id,
+                        position,
+                        request,
+                    });
             },
             EmbedderMsg::HideEmbedderControl(control_id) => {
+                self.pending_embedder_controls
+                    .borrow_mut()
+                    .retain(|control| control.id != control_id);
                 if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
                     webview
                         .delegate()
@@ -880,6 +917,9 @@ impl ServoInner {
                 }
             },
             ConstellationToEmbedderMsg::WebViewClosed(webview_id) => {
+                self.pending_embedder_controls
+                    .borrow_mut()
+                    .retain(|control| control.id.webview_id != webview_id);
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().notify_closed(webview);
                 }
@@ -934,6 +974,9 @@ impl ServoInner {
                 }
             },
             ConstellationToEmbedderMsg::PipelineExited(pipeline_id) => {
+                self.pending_embedder_controls
+                    .borrow_mut()
+                    .retain(|control| control.id.pipeline_id != pipeline_id);
                 let orphaned = self
                     .geolocation_watches
                     .borrow()
@@ -1138,6 +1181,7 @@ impl Servo {
             servo_errors: ServoErrorChannel::default(),
             _js_engine_setup: js_engine_setup,
             pending_handled_input_events: Default::default(),
+            pending_embedder_controls: Default::default(),
             event_loop_waker,
             geolocation_watches: Default::default(),
         }))
