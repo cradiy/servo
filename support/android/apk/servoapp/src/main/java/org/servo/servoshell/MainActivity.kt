@@ -12,7 +12,6 @@ import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.component1
@@ -54,7 +53,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import androidx.window.core.layout.WindowSizeClass
 import kotlinx.coroutines.launch
@@ -67,7 +65,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
     private lateinit var historyManager: HistoryManager
     private var currentUrl = ""
     private var currentTitle = ""
-    private var softKeyboardVisible by mutableStateOf(false)
     private var alertMessage by mutableStateOf<String?>(null)
 
     private class Settings(preferences: SharedPreferences) {
@@ -81,17 +78,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         val settings = Settings(sharedPreferences)
         val navigator = ServoNavigator()
         var experimentalModeEnabled by mutableStateOf(settings.experimental)
-        val servo =
-            Servo(
-                args = intent.getStringExtra("servoargs"),
-                url = if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
-                logStr = intent.getStringExtra("servolog"),
-                experimentalMode = experimentalModeEnabled,
-                scope = lifecycleScope,
-                client = this,
-                context = this,
-                navigator = navigator,
-            )
 
         historyManager = HistoryManager(this)
 
@@ -245,12 +231,14 @@ class MainActivity : ComponentActivity(), Servo.Client {
             ) { innerPadding ->
                 Servo(
                     experimentalModeEnabled = experimentalModeEnabled,
-                    softKeyboardVisible = softKeyboardVisible,
-                    servo = servo,
+                    args = intent.getStringExtra("servoargs"),
+                    initialUrl =
+                        if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
+                    logStr = intent.getStringExtra("servolog"),
+                    client = this,
                     navigator = navigator,
                     modifier = Modifier.padding(innerPadding).focusRequester(servoFocusRequester),
                 )
-                BackHandler(enabled = navigator.canGoBack) { navigator.back() }
                 LaunchedEffect(servoFocusRequester) { servoFocusRequester.requestFocus() }
                 alertMessage?.let { alertMessage ->
                     AlertDialog(
@@ -299,14 +287,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         historyActivityResultLauncher: ActivityResultLauncher<Intent>
     ) {
         historyActivityResultLauncher.launch(Intent(this, HistoryActivity::class.java))
-    }
-
-    override fun onImeShow() {
-        softKeyboardVisible = true
-    }
-
-    override fun onImeHide() {
-        softKeyboardVisible = false
     }
 
     override fun onAlert(message: String) {

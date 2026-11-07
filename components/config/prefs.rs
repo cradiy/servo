@@ -73,6 +73,10 @@ pub fn set(preferences: Preferences) {
         preferences.layout_css_masking_enabled
     );
     stylo_static_prefs::set_pref!(
+        "layout.css.webkit-text-fill-color.enabled",
+        preferences.layout_css_webkit_text_fill_color_enabled
+    );
+    stylo_static_prefs::set_pref!(
         "layout.css.writing-mode.enabled",
         preferences.layout_css_writing_mode_enabled
     );
@@ -327,6 +331,7 @@ pub struct Preferences {
     // feature: Variable fonts | #38800 | Web/CSS/Guides/Fonts/Variable_fonts
     pub layout_css_font_variations_enabled: bool,
     pub layout_css_masking_enabled: bool,
+    pub layout_css_webkit_text_fill_color_enabled: bool,
     // feature: CSS writing modes | #2560 | Web/CSS/Guides/Writing_modes
     pub layout_css_writing_mode_enabled: bool,
     pub layout_style_sharing_cache_enabled: bool,
@@ -504,8 +509,8 @@ impl Preferences {
             dom_testutils_enabled: false,
             // Following Firefox and Chrome, we are enabling the touch events legacy APIs for android.
             // Additionally, enabling it in ohos for compatibility as well.
-            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android") |
-                cfg!(target_env = "ohos"),
+            dom_touch_events_legacy_apis_enabled: cfg!(target_os = "android")
+                | cfg!(target_env = "ohos"),
             dom_transient_activation_duration_ms: 5000,
             dom_web_animations_enabled: false,
             dom_webgl2_enabled: false,
@@ -586,6 +591,7 @@ impl Preferences {
             layout_css_ellipse_corners_enabled: false,
             layout_css_font_variations_enabled: false,
             layout_css_masking_enabled: false,
+            layout_css_webkit_text_fill_color_enabled: false,
             layout_css_writing_mode_enabled: false,
             layout_style_sharing_cache_enabled: true,
             // TODO(mrobinson): This should likely be based on the number of processors.

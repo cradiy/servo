@@ -31,6 +31,7 @@ use servo::{
 use super::app::{App, AppInitOptions};
 use super::host_trait::HostTrait;
 use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
+use crate::window::ServoShellWindowId;
 
 thread_local! {
     pub static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
@@ -238,7 +239,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_addPlatformWindow<'local>(
                 window_handle,
                 viewport_rect,
                 hidpi_scale_factor,
-                None,
+                ServoShellWindowId::next(),
             )
         });
         Ok(())
@@ -362,7 +363,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_doFrame<'local>(
     _: JClass<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
-        call(env, |s| s.notify_vsync());
+        call(env, |s| s.notify_vsync_legacy());
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
@@ -611,7 +612,7 @@ impl HostTrait for HostCallbacks {
                     )
                     .map(|_| ()),
                 LoadStatus::HeadParsed => Ok(()),
-                LoadStatus::Complete => env
+                LoadStatus::Complete | LoadStatus::Stopped => env
                     .call_method(
                         callback_ref(),
                         jni_str!("onLoadEnded"),

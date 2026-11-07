@@ -11,14 +11,18 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.inputmethod.BaseInputConnection
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.AndroidExternalSurface
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.Interaction
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
@@ -32,9 +36,10 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.PlatformTextInputModifierNode
 import androidx.compose.ui.platform.establishTextInputSession
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import java.util.concurrent.Executors
 import kotlin.coroutines.EmptyCoroutineContext
@@ -48,11 +53,31 @@ import kotlinx.coroutines.launch
 @Composable
 fun Servo(
     experimentalModeEnabled: Boolean,
-    softKeyboardVisible: Boolean,
-    servo: Servo,
+    args: String?,
+    initialUrl: String?,
+    logStr: String?,
+    client: Servo.Client,
     navigator: ServoNavigator,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var softKeyboardVisible by remember { mutableStateOf(false) }
+    val servo = remember {
+        Servo(
+            args = args,
+            url = initialUrl,
+            logStr = logStr,
+            experimentalMode = experimentalModeEnabled,
+            scope = scope,
+            client = client,
+            context = context,
+            navigator = navigator,
+            onImeShow = { softKeyboardVisible = true },
+            onImeHide = { softKeyboardVisible = false },
+        )
+    }
+
     LifecycleResumeEffect(servo) {
         servo.suspend(false)
         onPauseOrDispose { servo.suspend(true) }
@@ -63,11 +88,13 @@ fun Servo(
         }
     }
     LaunchedEffect(servo, navigator) { navigator.consumeNavigationEvents(servo) }
+    BackHandler(enabled = navigator.canGoBack) { navigator.back() }
     LaunchedEffect(experimentalModeEnabled) { servo.setExperimentalMode(experimentalModeEnabled) }
+    DisposableEffect(servo) { onDispose { servo.glDispatcher.close() } }
 
+    val resources = LocalResources.current
     val focusRequester = remember { FocusRequester() }
-    AndroidView(
-        factory = { context -> ServoView(context, servo) },
+    AndroidExternalSurface(
         modifier =
             modifier
                 .focusRequester(focusRequester)
@@ -113,9 +140,32 @@ fun Servo(
                     }
 
                     true
-                },
-        onRelease = { servo.glDispatcher.close() },
-    )
+                }
+    ) {
+        var paused = false
+
+        onSurface { surface, width, height ->
+            val size = Size(width, height)
+
+            if (!paused) {
+                servo.addPlatformWindow(
+                    size,
+                    resources.displayMetrics.density,
+                    surface,
+                )
+            } else {
+                paused = false
+                servo.resumePainting(surface, size)
+            }
+
+            surface.onChanged { width, height -> servo.resize(Size(width, height)) }
+
+            surface.onDestroyed {
+                paused = true
+                servo.pausePainting()
+            }
+        }
+    }
 }
 
 @Stable
@@ -200,7 +250,8 @@ private class SoftKeyboardVisibleNode : Modifier.Node(), PlatformTextInputModifi
     }
 }
 
-class Servo(
+class Servo
+internal constructor(
     args: String?,
     url: String?,
     logStr: String?,
@@ -209,10 +260,21 @@ class Servo(
     client: Client,
     context: Context,
     navigator: ServoNavigator,
+    onImeShow: () -> Unit,
+    onImeHide: () -> Unit,
 ) {
     private val jni = JNIServo()
     internal val glDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-    private val servoCallbacks = Callbacks(client, jni, scope, glDispatcher, navigator)
+    private val servoCallbacks =
+        Callbacks(
+            client,
+            jni,
+            scope,
+            glDispatcher,
+            navigator,
+            onImeShow,
+            onImeHide,
+        )
 
     init {
         scope.launch(glDispatcher) {
@@ -319,10 +381,6 @@ class Servo(
         fun onTitleChanged(title: String)
 
         fun onUrlChanged(url: String)
-
-        fun onImeShow()
-
-        fun onImeHide()
     }
 
     private class Callbacks(
@@ -331,6 +389,8 @@ class Servo(
         private val scope: CoroutineScope,
         private val glDispatcher: CoroutineDispatcher,
         private val navigator: ServoNavigator,
+        private val onImeShow: () -> Unit,
+        private val onImeHide: () -> Unit,
     ) : JNIServo.Callbacks, Client {
         var suspended: Boolean = false
 
@@ -345,11 +405,11 @@ class Servo(
         }
 
         override fun onImeShow() {
-            scope.launch { client.onImeShow() }
+            scope.launch { onImeShow.invoke() }
         }
 
         override fun onImeHide() {
-            scope.launch { client.onImeHide() }
+            scope.launch { onImeHide.invoke() }
         }
 
         override fun onLoadStarted() {

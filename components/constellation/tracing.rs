@@ -123,6 +123,7 @@ mod from_script {
     impl LogTarget for servo_constellation_traits::ScriptToConstellationMessage {
         fn log_target(&self) -> &'static str {
             match self {
+                Self::ServiceWorkerStateUpdateDone(..) => target!("ServiceWorkerStateUpdateDone"),
                 Self::ServiceWorkerAlgorithm(..) => target!("ServiceWorkerAlgorithm"),
                 Self::CompleteMessagePortTransfer(..) => target!("CompleteMessagePortTransfer"),
                 Self::MessagePortTransferResult(..) => target!("MessagePortTransferResult"),
@@ -169,7 +170,7 @@ mod from_script {
                 },
                 Self::GetChildBrowsingContextCount(..) => target!("GetChildBrowsingContextCount"),
                 Self::GetChildBrowsingContextId(..) => target!("GetChildBrowsingContextId"),
-                Self::LoadComplete => target!("LoadComplete"),
+                Self::LoadFinished { .. } => target!("LoadFinished"),
                 Self::LoadUrl(..) => target!("LoadUrl"),
                 Self::AbortLoadUrl => target!("AbortLoadUrl"),
                 Self::PostMessage { .. } => target!("PostMessage"),

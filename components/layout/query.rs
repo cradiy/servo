@@ -67,10 +67,7 @@ fn root_transform_for_fragments(
     scroll_tree: &ScrollTree,
     fragments: &[Fragment],
 ) -> Option<FastLayoutTransform> {
-    let box_fragment = fragments
-        .first()
-        .and_then(Fragment::retrieve_box_fragment)?;
-    let scroll_tree_node_id = box_fragment.spatial_tree_node()?;
+    let scroll_tree_node_id = fragments.first()?.spatial_tree_node()?;
     Some(scroll_tree.cumulative_node_to_root_transform(scroll_tree_node_id))
 }
 
@@ -683,15 +680,12 @@ pub fn process_offset_parent_query(
     let fragment = node.fragments_for_pseudo(None).first().cloned()?;
     let mut border_box =
         fragment.cumulative_box_area_rect(BoxAreaType::Border, layout_thread.into())?;
-    let cumulative_sticky_offsets = fragment
-        .retrieve_box_fragment()
-        .and_then(|box_fragment| box_fragment.spatial_tree_node())
-        .map(|node_id| {
-            scroll_tree
-                .cumulative_sticky_offsets(node_id)
-                .map(Au::from_f32_px)
-                .cast_unit()
-        });
+    let cumulative_sticky_offsets = fragment.spatial_tree_node().map(|node_id| {
+        scroll_tree
+            .cumulative_sticky_offsets(node_id)
+            .map(Au::from_f32_px)
+            .cast_unit()
+    });
     border_box = border_box.translate(cumulative_sticky_offsets.unwrap_or_default());
 
     // 2.  If the offsetParent of the element is null return the x-coordinate of the left
@@ -1058,12 +1052,17 @@ fn rendered_text_collection_steps(
                         if let Some(grandparent_node) =
                             unsafe { parent_node.dangerous_dom_parent() }
                         {
-                            if !matches!(
-                                grandparent_node.type_id(),
-                                Some(LayoutNodeType::Element(
-                                    LayoutElementType::HTMLSelectElement
-                                ))
-                            ) {
+                            // The grandparent might not be an element (for example a `Document`
+                            // or a shadow root), and layout can't represent those node types,
+                            // so check for an element before asking for its type.
+                            let grandparent_is_select = grandparent_node.as_element().is_some() &&
+                                matches!(
+                                    grandparent_node.type_id(),
+                                    Some(LayoutNodeType::Element(
+                                        LayoutElementType::HTMLSelectElement
+                                    ))
+                                );
+                            if !grandparent_is_select {
                                 return items;
                             }
                         } else {

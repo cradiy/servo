@@ -14,7 +14,7 @@ use layout_api::{
 };
 use net_traits::image_cache::{
     Image as CachedImage, ImageCache, ImageCacheResult, ImageMaskMode, ImageMaskTiling,
-    ImageOrMetadataAvailable, PendingImageId,
+    ImageOrMetadataAvailable, PendingImageId, RasterizationResult,
 };
 use net_traits::request::InternalRequest;
 use parking_lot::{Mutex, RwLock};
@@ -71,10 +71,11 @@ impl LayoutContext<'_> {
     }
 
     pub(crate) fn should_parallelize_layout(&self, jobs: impl Iterator<Item = usize>) -> bool {
-        self.allow_parallel_layout &&
-            jobs.filter(|job| *job >= self.parallelism_job_size_minimum)
-                .count() >=
-                self.parallelism_job_count_minimum
+        self.allow_parallel_layout
+            && jobs
+                .filter(|job| *job >= self.parallelism_job_size_minimum)
+                .count()
+                >= self.parallelism_job_count_minimum
     }
 }
 
@@ -260,22 +261,26 @@ impl ImageResolver {
         node: OpaqueNode,
         svg_id: Option<Uuid>,
     ) -> Option<RasterImage> {
-        let result = self
+        match self
             .image_cache
-            .rasterize_vector_image(image_id, size, svg_id);
-        if let Some(image) = result.as_ref() {
-            self.handle_animated_image(node, Arc::new(image.clone()));
+            .rasterize_vector_image(image_id, size, svg_id)
+        {
+            RasterizationResult::Image(raster_image) => {
+                self.handle_animated_image(node, Arc::new(raster_image.clone()));
+                Some(raster_image)
+            },
+            RasterizationResult::PendingRasterization => {
+                self.pending_rasterization_images
+                    .lock()
+                    .push(PendingRasterizationImage {
+                        id: image_id,
+                        node: node.into(),
+                        size,
+                    });
+                None
+            },
+            RasterizationResult::InvalidSvgParameters => None,
         }
-        if result.is_none() {
-            self.pending_rasterization_images
-                .lock()
-                .push(PendingRasterizationImage {
-                    id: image_id,
-                    node: node.into(),
-                    size,
-                });
-        }
-        result
     }
 
     /// Resolve a cached image to a WebRender [`ImageKey`]

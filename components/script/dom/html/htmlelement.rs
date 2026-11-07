@@ -20,6 +20,7 @@ use style::attr::AttrValue;
 use stylo_atoms::atom;
 use stylo_dom::ElementState;
 
+use crate::dom::NodeFlags;
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterData_Binding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::{
@@ -256,7 +257,7 @@ impl HTMLElement {
     /// `.outerText` in JavaScript.`
     ///
     /// <https://html.spec.whatwg.org/multipage/#get-the-text-steps>
-    pub(crate) fn get_inner_outer_text(&self) -> DOMString {
+    pub(crate) fn get_inner_outer_text(&self, cx: &mut JSContext) -> DOMString {
         let node = self.upcast::<Node>();
         let window = node.owner_window();
         let element = self.as_element();
@@ -267,7 +268,7 @@ impl HTMLElement {
             return node.GetTextContent().unwrap();
         }
 
-        window.layout_reflow_deprecated(QueryMsg::ElementInnerOuterTextQuery);
+        window.layout_reflow(cx, QueryMsg::ElementInnerOuterTextQuery);
         let text = window
             .layout()
             .query_element_inner_outer_text(node.to_trusted_node_address());
@@ -811,65 +812,65 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent>
-    fn GetOffsetParent(&self) -> Option<DomRoot<Element>> {
+    fn GetOffsetParent(&self, cx: &mut JSContext) -> Option<DomRoot<Element>> {
         if self.is::<HTMLBodyElement>() || self.element.is_root() {
             return None;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (element, _) = window.offset_parent_query(node);
+        let (element, _) = window.offset_parent_query(cx, node);
 
         element
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>
-    fn OffsetTop(&self) -> i32 {
+    fn OffsetTop(&self, cx: &mut JSContext) -> i32 {
         if self.is_body_element() {
             return 0;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.origin.y.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetleft>
-    fn OffsetLeft(&self) -> i32 {
+    fn OffsetLeft(&self, cx: &mut JSContext) -> i32 {
         if self.is_body_element() {
             return 0;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.origin.x.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetwidth>
-    fn OffsetWidth(&self) -> i32 {
+    fn OffsetWidth(&self, cx: &mut JSContext) -> i32 {
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.size.width.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetheight>
-    fn OffsetHeight(&self) -> i32 {
+    fn OffsetHeight(&self, cx: &mut JSContext) -> i32 {
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.size.height.to_nearest_px()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-innertext-idl-attribute>
-    fn InnerText(&self) -> DOMString {
-        self.get_inner_outer_text()
+    fn InnerText(&self, cx: &mut JSContext) -> DOMString {
+        self.get_inner_outer_text(cx)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#set-the-inner-text-steps>
@@ -878,8 +879,8 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-outertext>
-    fn GetOuterText(&self) -> Fallible<DOMString> {
-        Ok(self.get_inner_outer_text())
+    fn GetOuterText(&self, cx: &mut JSContext) -> Fallible<DOMString> {
+        Ok(self.get_inner_outer_text(cx))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-innertext-idl-attribute:dom-outertext-2>
@@ -1546,14 +1547,30 @@ impl VirtualMethods for HTMLElement {
             },
             // <https://html.spec.whatwg.org/multipage/#the-inert-attribute>
             (&local_name!("inert"), mutation) => {
+                // https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog
+                // > While document is so blocked, every node that is connected to document, with the
+                // > exception of the subject element and its flat tree descendants, must become inert.
+                let is_blocked_document = element.is_document_element() &&
+                    element.owner_document().is_blocked_by_a_modal_dialog();
+
                 element.set_state(
                     cx.no_gc(),
                     ElementState::INERT,
-                    !matches!(mutation, AttributeMutation::Removed),
+                    is_blocked_document || !matches!(mutation, AttributeMutation::Removed),
                 );
             },
             (&local_name!("form"), mutation) if self.is_form_associated_custom_element() => {
                 self.form_attribute_mutated(cx, mutation);
+            },
+            // Adding or removing a "contenteditable" attribute might make a 0-size selection
+            // render its caret or not.
+            (&local_name!("contenteditable"), ..) => {
+                if let Some(selection) = self.owner_document().selection() &&
+                    self.upcast::<Node>()
+                        .get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
+                {
+                    selection.set_visible_selection_dirty();
+                }
             },
             // Adding or removing a "disabled" attribute may disable or enable a disableable
             // form control.

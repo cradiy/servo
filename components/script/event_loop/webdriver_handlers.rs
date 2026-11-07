@@ -14,7 +14,7 @@ use embedder_traits::{
 };
 use euclid::default::{Point2D, Rect, Size2D};
 use hyper_serde::Serde;
-use js::context::{JSContext, NoGC};
+use js::context::JSContext;
 use js::conversions::{FromJSValConvertible, jsstr_to_string};
 use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
 use js::jsval::UndefinedValue;
@@ -298,18 +298,19 @@ pub(crate) fn find_node_by_unique_id_in_document(
 }
 
 /// <https://w3c.github.io/webdriver/#dfn-link-text-selector>
-fn matching_links<'a>(
-    cx: &'a NoGC,
-    links: &'a NodeList,
+fn matching_links(
+    cx: &mut JSContext,
+    links: &NodeList,
     link_text: String,
     partial: bool,
-) -> impl Iterator<Item = String> + 'a {
+) -> Vec<String> {
+    let links: Vec<_> = links.iter(cx).map(|node| node.as_rooted()).collect();
     links
-        .iter(cx)
-        .filter(move |node| {
+        .into_iter()
+        .filter(|node| {
             let content = node
                 .downcast::<HTMLElement>()
-                .map(|element| element.InnerText())
+                .map(|element| element.InnerText(cx))
                 .map_or(String::new(), String::from)
                 .trim()
                 .to_owned();
@@ -320,6 +321,7 @@ fn matching_links<'a>(
             }
         })
         .map(|node| node.unique_id(node.owner_doc().window().pipeline_id()))
+        .collect()
 }
 
 fn all_matching_links(
@@ -334,7 +336,7 @@ fn all_matching_links(
     root_node
         .query_selector_all(cx, DOMString::from_static("a"))
         .map_err(|_| ErrorStatus::InvalidSelector)
-        .map(|nodes| matching_links(cx, &nodes, link_text, partial).collect())
+        .map(|nodes| matching_links(cx, &nodes, link_text, partial))
 }
 
 #[expect(unsafe_code)]
@@ -1187,8 +1189,8 @@ pub(crate) fn handle_get_element_shadow_root(
 
 impl Element {
     /// <https://w3c.github.io/webdriver/#dfn-keyboard-interactable>
-    fn is_keyboard_interactable(&self, no_gc: &NoGC) -> bool {
-        self.is_focusable_area(no_gc) || self.is::<HTMLBodyElement>() || self.is_document_element()
+    fn is_keyboard_interactable(&self, cx: &mut JSContext) -> bool {
+        self.is_focusable_area(cx) || self.is::<HTMLBodyElement>() || self.is_document_element()
     }
 }
 
@@ -1318,7 +1320,7 @@ pub(crate) fn handle_will_send_keys(
 
         // Step 7.6. If element is not keyboard-interactable,
         // return ErrorStatus::ElementNotInteractable.
-        if !element.is_keyboard_interactable(cx.no_gc()) {
+        if !element.is_keyboard_interactable(cx) {
             let _ = reply.send(Err(ErrorStatus::ElementNotInteractable));
             return;
         }
@@ -1614,6 +1616,7 @@ pub(crate) fn handle_get_title(
 
 /// <https://w3c.github.io/webdriver/#dfn-calculate-the-absolute-position>
 fn calculate_absolute_position(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: &PipelineId,
     rect: &DOMRect,
@@ -1632,8 +1635,8 @@ fn calculate_absolute_position(
     };
 
     // Step 3 - 5
-    let x = win.ScrollX() as f64 + rect.X();
-    let y = win.ScrollY() as f64 + rect.Y();
+    let x = win.ScrollX(cx) as f64 + rect.X();
+    let y = win.ScrollY(cx) as f64 + rect.Y();
 
     Ok((x, y))
 }
@@ -1653,7 +1656,7 @@ pub(crate) fn handle_get_rect(
                 // We pass the rect instead of element so we don't have to
                 // call `GetBoundingClientRect` twice.
                 let rect = element.GetBoundingClientRect(cx);
-                let (x, y) = calculate_absolute_position(documents, &pipeline, &rect)?;
+                let (x, y) = calculate_absolute_position(cx, documents, &pipeline, &rect)?;
 
                 // Step 6-7
                 Ok(Rect::new(
@@ -1689,6 +1692,7 @@ pub(crate) fn handle_scroll_and_get_bounding_client_rect(
 
 /// <https://w3c.github.io/webdriver/#dfn-get-element-text>
 pub(crate) fn handle_get_text(
+    cx: &mut JSContext,
     documents: &DocumentCollection,
     pipeline: PipelineId,
     node_id: String,
@@ -1699,7 +1703,7 @@ pub(crate) fn handle_get_text(
             get_known_element(documents, pipeline, node_id).map(|element| {
                 element
                     .downcast::<HTMLElement>()
-                    .map(|htmlelement| String::from(htmlelement.InnerText()))
+                    .map(|htmlelement| String::from(htmlelement.InnerText(cx)))
                     .unwrap_or_else(|| {
                         element
                             .upcast::<Node>()
@@ -1934,7 +1938,7 @@ pub(crate) fn handle_element_clear(
 
                 // Step 10. If element is not keyboard-interactable or not pointer-interactable,
                 // return error with error code element not interactable.
-                if !element.is_keyboard_interactable(cx.no_gc()) {
+                if !element.is_keyboard_interactable(cx) {
                     return Err(ErrorStatus::ElementNotInteractable);
                 }
 
@@ -2126,11 +2130,13 @@ fn get_element_pointer_interactable_paint_tree(
     get_element_in_view_center_point(cx, element).map_or(Vec::new(), |center_point| {
         if let Some(shadow_root) = element.containing_shadow_root() {
             shadow_root.ElementsFromPoint(
+                cx,
                 Finite::wrap(center_point.x as f64),
                 Finite::wrap(center_point.y as f64),
             )
         } else {
             element.owner_document().ElementsFromPoint(
+                cx,
                 Finite::wrap(center_point.x as f64),
                 Finite::wrap(center_point.y as f64),
             )

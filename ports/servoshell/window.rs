@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(target_os = "android")]
 use std::sync::atomic::AtomicU64;
 
 use euclid::Scale;
@@ -31,6 +32,7 @@ pub(crate) const LINE_WIDTH: f32 = 76.0;
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 100);
 
+#[cfg(target_os = "android")]
 static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
@@ -42,10 +44,22 @@ impl From<u64> for ServoShellWindowId {
     }
 }
 
+impl From<u32> for ServoShellWindowId {
+    fn from(value: u32) -> Self {
+        Self(u64::from(value))
+    }
+}
+
 impl ServoShellWindowId {
-    #[cfg_attr(not(any(target_os = "android", target_env = "ohos")), expect(unused))]
+    #[cfg(target_os = "android")]
     pub(crate) fn next() -> ServoShellWindowId {
         ServoShellWindowId(SERVOSHELL_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Expose the inner ID
+    #[cfg_attr(not(target_env = "ohos"), expect(unused))]
+    pub(crate) fn raw(self) -> u64 {
+        self.0
     }
 }
 

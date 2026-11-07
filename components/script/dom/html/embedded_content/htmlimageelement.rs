@@ -12,6 +12,7 @@ use euclid::default::Point2D;
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
+use layout_api::BoxAreaType;
 use mime::{self, Mime};
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
@@ -19,7 +20,7 @@ use net_traits::image_cache::{
 };
 use net_traits::request::{CorsSettings, Destination, Initiator, RequestId};
 use net_traits::{
-    FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming,
+    FetchMetadata, FetchResponseMsg, NetworkError, ReferrerPolicy, ResourceFetchTiming,
 };
 use num_traits::ToPrimitive;
 use pixels::{CorsStatus, ImageMetadata, Snapshot};
@@ -199,16 +200,10 @@ impl FetchResponseListener for ImageContext {
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
         debug!("got {:?} for {:?}", metadata.as_ref().map(|_| ()), self.url);
-        self.image_cache.notify_pending_response(
-            self.id,
-            FetchResponseMsg::ProcessResponse(request_id, metadata.clone()),
-        );
-
-        let metadata: Option<Metadata> = metadata.ok().map(Into::into);
 
         // Step 14.5 of https://html.spec.whatwg.org/multipage/#img-environment-changes
-        if let Some(metadata) = metadata.as_ref() &&
-            let Some(ref content_type) = metadata.content_type
+        if let Ok(fetch_metadata) = metadata.as_ref() &&
+            let Some(ref content_type) = fetch_metadata.metadata().content_type
         {
             let mime: Mime = content_type.clone().into_inner().into();
             if mime.type_() == mime::MULTIPART && mime.subtype().as_str() == "x-mixed-replace" {
@@ -216,14 +211,19 @@ impl FetchResponseListener for ImageContext {
             }
         }
 
-        // The HTTP status code is ignored here. Ok NetworkError is treated
-        // as real error
-        self.status = match metadata.as_ref().map(|m| m.status.clone()) {
-            None => Err(NetworkError::ResourceLoadError(
+        // The HTTP status code is ignored here. Only NetworkError is treated as real error.
+        self.status = if metadata.is_ok() {
+            Ok(())
+        } else {
+            Err(NetworkError::ResourceLoadError(
                 "No http status code received".to_owned(),
-            )),
-            Some(_) => Ok(()),
+            ))
         };
+
+        self.image_cache.notify_pending_response(
+            self.id,
+            FetchResponseMsg::ProcessResponse(request_id, metadata),
+        );
     }
 
     fn process_response_chunk(
@@ -1399,6 +1399,7 @@ impl HTMLImageElement {
     pub(crate) fn set_dimension_attribute_source(&self, no_gc: &NoGC, value: Option<&Element>) {
         self.dimension_attribute_source.set(value);
         self.upcast::<Node>().dirty(no_gc, NodeDamage::Other);
+        self.upcast::<Element>().dirty_presentational_hints();
     }
 
     /// <https://html.spec.whatwg.org/multipage/#img-available>
@@ -1433,7 +1434,13 @@ impl HTMLImageElement {
     ) -> (u32, u32) {
         // Step 1. If element is being rendered,
         // then return the width and height of element's content box, in CSS pixels. [CSS]
-        if let Some(content_box) = element.upcast::<Node>().content_box(cx) {
+        // Transforms don't change the content box size, only map it to a new coordinate system.
+        // <https://drafts.csswg.org/css-transforms-1/#transform-rendering>
+        if let Some(content_box) =
+            element
+                .owner_window()
+                .box_area_query(cx, element.upcast(), BoxAreaType::Content, true)
+        {
             return (
                 content_box.size.width.to_px() as u32,
                 content_box.size.height.to_px() as u32,

@@ -393,8 +393,11 @@ impl WebView {
         Ref::filter_map(self.inner(), |inner| inner.favicon.as_ref()).ok()
     }
 
-    pub(crate) fn set_favicon(self, new_value: Image) {
-        self.inner_mut().favicon = Some(new_value);
+    pub(crate) fn set_favicon(self, new_value: Option<Image>) {
+        if new_value.is_none() && self.inner().favicon.is_none() {
+            return;
+        }
+        self.inner_mut().favicon = new_value;
         self.delegate().notify_favicon_changed(self);
     }
 
@@ -1019,13 +1022,18 @@ impl WebView {
         let Some(webview_accesskit_tree_id) = self.inner().accesskit_tree_id else {
             return;
         };
+        let root_node_id = NodeId(0);
         let graft_node_id = NodeId(1);
 
         self.delegate().notify_accessibility_tree_update(
             self.clone(),
             TreeUpdate {
                 nodes: vec![],
-                tree: None,
+                tree: Some(Tree {
+                    root: root_node_id,
+                    toolkit_name: None,
+                    toolkit_version: None,
+                }),
                 tree_id: webview_accesskit_tree_id,
                 focus: graft_node_id,
             },

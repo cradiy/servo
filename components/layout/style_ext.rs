@@ -18,14 +18,13 @@ use style::properties::ComputedValues;
 use style::properties::longhands::backface_visibility::computed_value::T as BackfaceVisiblity;
 use style::properties::longhands::box_sizing::computed_value::T as BoxSizing;
 use style::properties::longhands::column_span::computed_value::T as ColumnSpan;
-use style::properties::style_structs::Border;
 use style::servo::selector_parser::PseudoElement;
 use style::values::CSSFloat;
 use style::values::computed::basic_shape::ClipPath;
 use style::values::computed::image::Image as ComputedImageLayer;
 use style::values::computed::{
-    BorderSideWidth, BorderStyle, Color, Inset, ItemPlacement, LengthPercentage, Margin,
-    SelfAlignment, TextWrapMode, WhiteSpaceCollapse,
+    BorderSideWidth, BorderStyle, Inset, ItemPlacement, LengthPercentage, Margin, SelfAlignment,
+    TextWrapMode, WhiteSpaceCollapse,
 };
 use style::values::generics::box_::Perspective;
 use style::values::generics::position::{GenericAspectRatio, PreferredRatio};
@@ -36,6 +35,7 @@ use unicode_bidi::Level;
 use webrender_api as wr;
 use webrender_api::units::LayoutTransform;
 
+use crate::containing_block::{ContainingBlock, IndefiniteContainingBlock};
 use crate::dom_traversal::{Contents, NodeAndStyleInfo};
 use crate::fragment_tree::FragmentFlags;
 use crate::geom::{
@@ -44,7 +44,6 @@ use crate::geom::{
 };
 use crate::sizing::{Size, Sizes};
 use crate::table::TableLayoutStyle;
-use crate::{ContainingBlock, IndefiniteContainingBlock};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum Display {
@@ -263,22 +262,25 @@ impl BorderStyleColor {
         Self { style, color }
     }
 
-    pub(crate) fn from_border(
-        border: &Border,
-        current_color: &AbsoluteColor,
-    ) -> PhysicalSides<Self> {
-        let resolve = |color: &Color| color.resolve_to_absolute(current_color);
+    pub(crate) fn from_style(style: &ComputedValues) -> PhysicalSides<Self> {
+        let border = style.get_border();
         PhysicalSides::<Self>::new(
-            Self::new(border.border_top_style, resolve(&border.border_top_color)),
+            Self::new(
+                border.border_top_style,
+                style.resolve_color(&border.border_top_color),
+            ),
             Self::new(
                 border.border_right_style,
-                resolve(&border.border_right_color),
+                style.resolve_color(&border.border_right_color),
             ),
             Self::new(
                 border.border_bottom_style,
-                resolve(&border.border_bottom_color),
+                style.resolve_color(&border.border_bottom_color),
             ),
-            Self::new(border.border_left_style, resolve(&border.border_left_color)),
+            Self::new(
+                border.border_left_style,
+                style.resolve_color(&border.border_left_color),
+            ),
         )
     }
 
@@ -505,9 +507,8 @@ impl ComputedValuesExt for ComputedValues {
         &self,
         containing_block_writing_mode: WritingMode,
     ) -> LogicalSides<BorderStyleColor> {
-        let current_color = self.get_color();
         LogicalSides::from_physical(
-            &BorderStyleColor::from_border(self.get_border(), current_color),
+            &BorderStyleColor::from_style(self),
             containing_block_writing_mode,
         )
     }
@@ -1199,18 +1200,7 @@ impl LayoutStyle<'_> {
         &self,
         containing_block: &IndefiniteContainingBlock,
     ) -> ContentBoxSizesAndPBM {
-        // <https://drafts.csswg.org/css-sizing-3/#cyclic-percentage-contribution>
-        // If max size properties or preferred size properties are set to a value containing
-        // indefinite percentages, we treat the entire value as the initial value of the property.
-        // However, for min size properties, as well as for margins and paddings,
-        // we instead resolve indefinite percentages against zero.
-        let containing_block_size_or_zero =
-            containing_block.size.map(|value| value.unwrap_or_default());
         let writing_mode = containing_block.style.writing_mode;
-        let pbm = self.padding_border_margin_with_writing_mode_and_containing_block_inline_size(
-            writing_mode,
-            containing_block_size_or_zero.inline,
-        );
         let style = self.style();
         let box_size = style.box_size(writing_mode);
         let min_size = style.min_box_size(writing_mode);
@@ -1236,13 +1226,45 @@ impl LayoutStyle<'_> {
             depends_on_block_constraints(&max_size.block) ||
             style.depends_on_block_constraints_due_to_relative_positioning(writing_mode);
 
-        let box_size = box_size.map_with(&containing_block.size, |size, basis| {
+        // If the containing block has a quirky block size, it means that the actual block size
+        // was indefinite, but it was overridden in order to be able to resolve percentages here.
+        // However, the spec says to only apply the quirk if `height` is set to a `<percentage>`.
+        // TODO: What to do in a vertical writing mode? Blink and WebKit still apply the quirk
+        // to the block axis. Gecko doesn't. See <https://github.com/whatwg/quirks/issues/62>.
+        // TODO: Blink and WebKit only require a percentage on the preferred sizing property
+        // for replaced elements. Non-replaced elements always have the quirk.
+        // TODO: Blink and WebKit consider that a `calc()` that contains a percentage fulfills
+        // the percentage requirement. See <https://github.com/whatwg/quirks/issues/48>.
+        let containing_block_size = LogicalVec2 {
+            inline: containing_block.size.inline,
+            block: if containing_block.has_quirky_block_size() &&
+                box_size.block.to_percentage().is_none()
+            {
+                None
+            } else {
+                containing_block.size.block
+            },
+        };
+
+        // <https://drafts.csswg.org/css-sizing-3/#cyclic-percentage-contribution>
+        // If max size properties or preferred size properties are set to a value containing
+        // indefinite percentages, we treat the entire value as the initial value of the property.
+        // However, for min size properties, as well as for margins and paddings,
+        // we instead resolve indefinite percentages against zero.
+        let containing_block_size_or_zero =
+            containing_block_size.map(|value| value.unwrap_or_default());
+        let pbm = self.padding_border_margin_with_writing_mode_and_containing_block_inline_size(
+            writing_mode,
+            containing_block_size_or_zero.inline,
+        );
+
+        let box_size = box_size.map_with(&containing_block_size, |size, basis| {
             size.resolve_percentages_for_preferred(*basis)
         });
         let content_box_size = style.content_box_size_for_box_size(box_size, &pbm);
         let min_size = min_size.percentages_relative_to_basis(&containing_block_size_or_zero);
         let content_min_box_size = style.content_min_box_size_for_min_size(min_size, &pbm);
-        let max_size = max_size.map_with(&containing_block.size, |size, basis| {
+        let max_size = max_size.map_with(&containing_block_size, |size, basis| {
             size.resolve_percentages_for_max(*basis)
         });
         let content_max_box_size = style.content_max_box_size_for_max_size(max_size, &pbm);
@@ -1448,5 +1470,19 @@ impl TransformExt for LayoutTransform {
         let pre_translation = Self::translation(x, y, z);
         let post_translation = Self::translation(-x, -y, -z);
         post_translation.then(self).then(&pre_translation)
+    }
+}
+
+pub(crate) trait WritingModeExt {
+    fn is_inline_flipped(&self) -> bool;
+    fn is_block_flipped(&self) -> bool;
+}
+
+impl WritingModeExt for WritingMode {
+    fn is_inline_flipped(&self) -> bool {
+        !self.is_inline_tb()
+    }
+    fn is_block_flipped(&self) -> bool {
+        self.is_vertical() && !self.is_vertical_lr()
     }
 }

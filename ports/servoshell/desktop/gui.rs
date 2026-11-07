@@ -464,7 +464,7 @@ impl Gui {
                                         warn!("Do not support stop yet.");
                                     }
                                 },
-                                LoadStatus::Complete => {
+                                LoadStatus::Complete | LoadStatus::Stopped => {
                                     let reload_button = ui.add(Gui::toolbar_button("↻"));
                                     reload_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -653,7 +653,7 @@ impl Gui {
                     ctx.clone(),
                     LayerId::new(Order::Tooltip, Id::new("tooltip")),
                     "tooltip layer".into(),
-                    pos2(0.0, available_rect.max.y),
+                    pos2(available_rect.max.x, available_rect.max.y),
                 )
                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
             }
@@ -846,6 +846,7 @@ fn load_pending_favicons(
             continue;
         };
         let Some(favicon) = webview.favicon() else {
+            texture_cache.remove(&id);
             continue;
         };
 

@@ -9,10 +9,11 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use embedder_traits::{
-    Cursor, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome, InputEventResult,
-    KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseLeftViewportEvent, MouseMoveEvent, TouchEvent as EmbedderTouchEvent, TouchEventType,
-    TouchId, TouchPointerType, UntrustedNodeAddress, WheelEvent as EmbedderWheelEvent,
+    Cursor, EditingAction, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome,
+    InputEventResult, KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, TouchEvent as EmbedderTouchEvent,
+    TouchEventType, TouchId, TouchPointerType, UntrustedNodeAddress,
+    WheelEvent as EmbedderWheelEvent,
 };
 #[cfg(feature = "gamepad")]
 use embedder_traits::{
@@ -68,6 +69,7 @@ use crate::dom::gamepad::gamepad::{Gamepad, contains_user_gesture};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepadevent::GamepadEventType;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::htmldialogelement::HTMLDialogElement;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::keyboardevent::KeyboardEvent;
@@ -80,6 +82,7 @@ use crate::dom::types::{
     HTMLElement, HTMLLabelElement, MouseEvent, Touch, TouchEvent, TouchList, WheelEvent, Window,
 };
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement, ScrollingBoxAxis};
+use crate::dom::window::windowproxy::WindowOpenType;
 use crate::drag::drag_gesture::DragGesture;
 use crate::navigation::navigate;
 use crate::realms::enter_auto_realm;
@@ -522,7 +525,7 @@ impl DocumentEventHandler {
             if let Some(hit_test_result) =
                 self.most_recent_mousemove_point.get().and_then(|point| {
                     self.window
-                        .hit_test_from_point_in_viewport(HitTestFlags::empty(), point)
+                        .hit_test_from_point_in_viewport(cx, HitTestFlags::empty(), point)
                 })
             {
                 let mouse_out_event = MouseEvent::new_for_platform_motion_event(
@@ -670,9 +673,9 @@ impl DocumentEventHandler {
         // with the actual element under the pointer. Boundary events for hover
         // transitions are suppressed while pointer capture is active: per spec,
         // pointer events are retargeted to the capture element.
-        let Some(hit_test_result) = self
-            .window
-            .hit_test_from_input_event(hit_test_flags, input_event)
+        let Some(hit_test_result) =
+            self.window
+                .hit_test_from_input_event(cx, hit_test_flags, input_event)
         else {
             return;
         };
@@ -905,15 +908,16 @@ impl DocumentEventHandler {
         }
     }
 
-    pub(crate) fn handle_refresh_cursor(&self) {
+    pub(crate) fn handle_refresh_cursor(&self, cx: &mut JSContext) {
         let Some(most_recent_mousemove_point) = self.most_recent_mousemove_point.get() else {
             return;
         };
 
-        let Some(hit_test_result) = self
-            .window
-            .hit_test_from_point_in_viewport(HitTestFlags::empty(), most_recent_mousemove_point)
-        else {
+        let Some(hit_test_result) = self.window.hit_test_from_point_in_viewport(
+            cx,
+            HitTestFlags::empty(),
+            most_recent_mousemove_point,
+        ) else {
             return;
         };
 
@@ -993,7 +997,9 @@ impl DocumentEventHandler {
             HitTestFlags::empty()
         };
         // Ignore all incoming events without a hit test.
-        let Some(hit_test_result) = self.window.hit_test_from_input_event(flags, input_event)
+        let Some(hit_test_result) = self
+            .window
+            .hit_test_from_input_event(cx, flags, input_event)
         else {
             return;
         };
@@ -1117,7 +1123,7 @@ impl DocumentEventHandler {
                         .set(input_event.pressed_mouse_buttons);
 
                     let pointer_event_result =
-                        pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+                        self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
                     // Process pending pointer capture after firing event, but skip if we just
                     // released a disconnected capture to avoid immediately re-capturing.
@@ -1153,9 +1159,10 @@ impl DocumentEventHandler {
                     // Note that this differs from the specification, because we are going to look
                     // for the first inclusive ancestor that is click focusable and then focus it.
                     // See documentation for [`Node::find_click_focusable_area`].
+                    let node_click_focusable_area = &node.find_click_focusable_area(cx);
                     document.focus_handler().focus(
                         cx,
-                        &node.find_click_focusable_area(cx),
+                        node_click_focusable_area,
                         FocusTrigger::Click,
                     );
                 }
@@ -1201,7 +1208,7 @@ impl DocumentEventHandler {
                         .map(DomRoot::upcast::<EventTarget>)
                         .unwrap_or_else(|| DomRoot::from_ref(node.upcast::<EventTarget>()));
 
-                    pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+                    self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
                     // Update button state after firing event, so setPointerCapture/releasePointerCapture
                     // work during the pointerup handler (pointer is still "active").
@@ -1398,7 +1405,9 @@ impl DocumentEventHandler {
     ) -> InputEventResult {
         let flags = HitTestFlags::empty();
         // Ignore all incoming events without a hit test.
-        let Some(hit_test_result) = self.window.hit_test_from_input_event(flags, input_event)
+        let Some(hit_test_result) = self
+            .window
+            .hit_test_from_input_event(cx, flags, input_event)
         else {
             self.update_active_touch_points_when_early_return(event);
             return Default::default();
@@ -1421,9 +1430,9 @@ impl DocumentEventHandler {
         let client_x = Finite::wrap(hit_test_result.point_in_frame.x as f64);
         let client_y = Finite::wrap(hit_test_result.point_in_frame.y as f64);
         let page_x =
-            Finite::wrap(hit_test_result.point_in_frame.x as f64 + window.PageXOffset() as f64);
+            Finite::wrap(hit_test_result.point_in_frame.x as f64 + window.PageXOffset(cx) as f64);
         let page_y =
-            Finite::wrap(hit_test_result.point_in_frame.y as f64 + window.PageYOffset() as f64);
+            Finite::wrap(hit_test_result.point_in_frame.y as f64 + window.PageYOffset(cx) as f64);
 
         // This is used to construct pointerevent and touchdown event.
         let pointer_touch = Touch::new(
@@ -1514,7 +1523,7 @@ impl DocumentEventHandler {
             event.is_cancelable(),
             Some(hit_test_result.point_in_node),
         );
-        pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+        self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
         // Process pending pointer capture after firing event, but skip if we just
         // released a disconnected capture (to avoid immediately re-capturing).
@@ -1642,9 +1651,9 @@ impl DocumentEventHandler {
             TouchEventType::Cancel => "touchcancel",
         };
 
-        let touches = TouchList::new(cx, window, self.active_touch_points.borrow().r());
+        let touches = TouchList::new(cx, window, self.active_touch_points.borrow().as_ref_slice());
         let changed_touches = TouchList::new(cx, window, from_ref(&&*changed_touch));
-        let target_touches = TouchList::new(cx, window, target_touches.r());
+        let target_touches = TouchList::new(cx, window, target_touches.as_ref_slice());
 
         let touch_event = TouchEvent::new(
             cx,
@@ -1776,17 +1785,43 @@ impl DocumentEventHandler {
         cx: &mut JSContext,
         keyboard_event: EmbedderKeyboardEvent,
     ) -> InputEventResult {
+        let event_type = keyboard_event.event.state.event_type().into();
+        // We should update the state of the focus handler even if the default action
+        // of the keyboard event will be prevented. That could be the case where in
+        // the callback of a keydown event we cancel the event, but also pass on focus
+        // to another element. In that case, the newly script focused element should
+        // still match `:focus-visible`.
+        if event_type == atom!("keydown") {
+            self.window
+                .Document()
+                .focus_handler()
+                .set_last_user_interaction_was_keyboard(true);
+        }
+
         let target = &self.target_for_events_following_focus();
         let keyevent = KeyboardEvent::new_with_platform_keyboard_event(
             cx,
             &self.window,
-            keyboard_event.event.state.event_type().into(),
+            event_type,
             &keyboard_event.event,
         );
 
         let event = keyevent.upcast::<Event>();
         event.set_composed(true);
-        event.fire(cx, target);
+        // <https://html.spec.whatwg.org/multipage/#close-requests>
+        // > Some example close requests are:
+        // > - The Esc key on desktop platforms.
+        // > On platforms where pressing the Esc key is interpreted as a close request, the user agent
+        // > must interpret the key being pressed down as the close request, instead of the key being
+        // > released. Thus, in the above algorithm, the "relevant events" that are fired must be the
+        // > single keydown event.
+        if keyboard_event.event.state == KeyState::Down &&
+            keyboard_event.event.key == Key::Named(NamedKey::Escape)
+        {
+            self.close_request_steps(cx, Some((event, target)));
+        } else {
+            event.fire(cx, target);
+        }
 
         // From https://w3c.github.io/uievents/#keys-cancelable-keys:
         // > Canceling the default action of a keydown event MUST NOT affect its
@@ -1823,18 +1858,80 @@ impl DocumentEventHandler {
         self.run_default_keydown_handler(cx, target, &keyboard_event, flags.into())
     }
 
-    fn handle_ime_event(&self, cx: &mut JSContext, event: ImeEvent) -> InputEventResult {
+    /// <https://html.spec.whatwg.org/multipage/#close-request-steps>
+    ///
+    /// `event` is the event to fire for this close request, along with its target, if any.
+    pub(crate) fn close_request_steps(
+        &self,
+        cx: &mut JSContext,
+        event: Option<(&Event, &EventTarget)>,
+    ) {
+        // Step 1. If document's fullscreen element is not null:
         let document = self.window.Document();
-        let composition_event = match event {
-            ImeEvent::Dismissed => {
-                document
-                    .focus_handler()
-                    .focus(cx, &FocusableArea::Viewport, FocusTrigger::Script);
-                return Default::default();
-            },
-            ImeEvent::Composition(composition_event) => composition_event,
-        };
+        if document.fullscreen_element().is_some() {
+            // Step 1.1. Fully exit fullscreen given document's node navigable's top-level traversable's active document.
+            // TODO: node navigable's top-level traversable's active document
+            document.fully_exit_fullscreen(cx);
 
+            // Step 1.2. Return.
+            return;
+        }
+
+        // Step 2. Optionally, skip to the step labeled alternative processing.
+
+        // Step 3. Fire any relevant events, per UI Events or other relevant specifications. [UIEVENTS]
+        if let Some((event, target)) = event {
+            event.fire(cx, target);
+        }
+
+        // Step 4. Let event be null if no such events are fired, or the Event object representing one of
+        // the fired events otherwise. If multiple events are fired, which one is chosen is
+        // implementation-defined.
+        let event = event.map(|(event, _)| event);
+
+        // Step 5. If event is not null, and its canceled flag is set, then return.
+        if event.is_some_and(|event| event.flags().contains(EventFlags::Canceled)) {
+            return;
+        }
+
+        // Step 6. If document is not fully active, then return.
+        if !document.is_fully_active() {
+            return;
+        }
+
+        // Step 7. Let closedSomething be the result of processing close watchers on document's
+        // relevant global object.
+        self.window.process_close_watchers(cx);
+
+        // Step 8. If closedSomething is true, then return.
+        // Step 9. Alternative processing: Otherwise, there was nothing watching for a close request.
+        // The user agent may instead interpret this interaction as some other action, instead of
+        // interpreting it as a close request.
+    }
+
+    fn handle_ime_event(&self, cx: &mut JSContext, event: ImeEvent) -> InputEventResult {
+        match event {
+            ImeEvent::Dismissed => {
+                self.window.Document().focus_handler().focus(
+                    cx,
+                    &FocusableArea::Viewport,
+                    FocusTrigger::Script,
+                );
+                Default::default()
+            },
+            ImeEvent::Commit(text) => self.handle_ime_commit(cx, text),
+            ImeEvent::Composition(composition_event) => {
+                self.handle_ime_composition(cx, composition_event)
+            },
+        }
+    }
+
+    fn handle_ime_composition(
+        &self,
+        cx: &mut JSContext,
+        composition_event: keyboard_types::CompositionEvent,
+    ) -> InputEventResult {
+        let document = self.window.Document();
         // spec: https://w3c.github.io/uievents/#compositionstart
         // spec: https://w3c.github.io/uievents/#compositionupdate
         // spec: https://w3c.github.io/uievents/#compositionend
@@ -1877,6 +1974,20 @@ impl DocumentEventHandler {
         composition_event_result
     }
 
+    fn handle_ime_commit(&self, cx: &mut JSContext, text: String) -> InputEventResult {
+        let document = self.window.Document();
+        let focused_area = document.focus_handler().focused_area();
+        let Some(focused_element) = focused_area.element() else {
+            // Event is only dispatched if there is a focused element.
+            return Default::default();
+        };
+        let editing_host = document.editing_context(cx.no_gc(), focused_element.upcast());
+        if editing_host.perform_editing_action(cx, EditingAction::InsertText(text)) {
+            return InputEventResult::Consumed;
+        }
+        Default::default()
+    }
+
     fn handle_wheel_event(
         &self,
         cx: &mut JSContext,
@@ -1885,7 +1996,9 @@ impl DocumentEventHandler {
     ) -> InputEventResult {
         // Ignore all incoming events without a hit test.
         let flags = HitTestFlags::empty();
-        let Some(hit_test_result) = self.window.hit_test_from_input_event(flags, input_event)
+        let Some(hit_test_result) = self
+            .window
+            .hit_test_from_input_event(cx, flags, input_event)
         else {
             return Default::default();
         };
@@ -2316,7 +2429,7 @@ impl DocumentEventHandler {
                 document.viewport_scrolling_box(ScrollContainerQueryFlags::Inclusive)
             });
 
-        while !scrolling_box.can_keyboard_scroll_in_axis(cx.no_gc(), scroll_axis) {
+        while !scrolling_box.can_keyboard_scroll_in_axis(cx, scroll_axis) {
             // Always fall back to trying to scroll the entire document.
             if scrolling_box.is_viewport() {
                 break;
@@ -2327,28 +2440,26 @@ impl DocumentEventHandler {
             scrolling_box = parent;
         }
 
-        let calculate_current_scroll_offset_and_delta = || {
+        let calculate_current_scroll_offset_and_delta = |cx: &mut JSContext| {
             const LINE_HEIGHT: f32 = 76.0;
             const LINE_WIDTH: f32 = 76.0;
 
-            let current_scroll_offset = scrolling_box.scroll_position();
+            let current_scroll_offset = scrolling_box.scroll_position(cx);
             (
                 current_scroll_offset,
                 match scroll {
                     KeyboardScroll::Home => Vector2D::new(0.0, -current_scroll_offset.y),
                     KeyboardScroll::End => Vector2D::new(
                         0.0,
-                        -current_scroll_offset.y + scrolling_box.content_size().height -
-                            scrolling_box.size(cx.no_gc()).height,
+                        -current_scroll_offset.y + scrolling_box.content_size(cx).height -
+                            scrolling_box.size(cx).height,
                     ),
-                    KeyboardScroll::PageDown => Vector2D::new(
-                        0.0,
-                        scrolling_box.size(cx.no_gc()).height - 2.0 * LINE_HEIGHT,
-                    ),
-                    KeyboardScroll::PageUp => Vector2D::new(
-                        0.0,
-                        2.0 * LINE_HEIGHT - scrolling_box.size(cx.no_gc()).height,
-                    ),
+                    KeyboardScroll::PageDown => {
+                        Vector2D::new(0.0, scrolling_box.size(cx).height - 2.0 * LINE_HEIGHT)
+                    },
+                    KeyboardScroll::PageUp => {
+                        Vector2D::new(0.0, 2.0 * LINE_HEIGHT - scrolling_box.size(cx).height)
+                    },
                     KeyboardScroll::Up => Vector2D::new(0.0, -LINE_HEIGHT),
                     KeyboardScroll::Down => Vector2D::new(0.0, LINE_HEIGHT),
                     KeyboardScroll::Left => Vector2D::new(-LINE_WIDTH, 0.0),
@@ -2362,7 +2473,7 @@ impl DocumentEventHandler {
         // can properly pan any pinch zoom viewport.
         let parent_pipeline = self.window.parent_info();
         if scrolling_box.is_viewport() && parent_pipeline.is_none() {
-            let (_, delta) = calculate_current_scroll_offset_and_delta();
+            let (_, delta) = calculate_current_scroll_offset_and_delta(cx);
             self.window
                 .paint_api()
                 .scroll_viewport_by_delta(self.window.webview_id(), delta);
@@ -2370,7 +2481,7 @@ impl DocumentEventHandler {
 
         // If this is the viewport and we cannot scroll, try to ask a parent viewport to scroll,
         // if we are inside an `<iframe>`.
-        if !scrolling_box.can_keyboard_scroll_in_axis(cx.no_gc(), scroll_axis) {
+        if !scrolling_box.can_keyboard_scroll_in_axis(cx, scroll_axis) {
             assert!(scrolling_box.is_viewport());
 
             let window_proxy = document.window().window_proxy();
@@ -2395,7 +2506,7 @@ impl DocumentEventHandler {
             return;
         }
 
-        let (current_scroll_offset, delta) = calculate_current_scroll_offset_and_delta();
+        let (current_scroll_offset, delta) = calculate_current_scroll_offset_and_delta(cx);
         scrolling_box.scroll_to(cx, delta + current_scroll_offset, ScrollBehavior::Auto);
     }
 
@@ -3070,15 +3181,15 @@ impl DocumentEventHandler {
         else {
             return;
         };
-        let (browsing_context, new) = browsing_context.choose_a_navigable(
+        let (browsing_context, window_open_type) = browsing_context.choose_a_navigable(
             cx,
-            DOMString::from_static("_blank"),
+            &DOMString::from_static("_blank"),
             true, /* noopener */
         );
         let Some(browsing_context) = browsing_context else {
             return;
         };
-        assert!(new);
+        assert!(window_open_type != WindowOpenType::ExistingOrNone);
         let Some(target_document) = browsing_context.document() else {
             return;
         };
@@ -3094,6 +3205,27 @@ impl DocumentEventHandler {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task);
+    }
+
+    fn fire_pointer_event(
+        &self,
+        cx: &mut JSContext,
+        pointer_event: &PointerEvent,
+        target: &EventTarget,
+    ) -> bool {
+        let result = pointer_event.upcast::<Event>().fire(cx, target);
+        Self::light_dismiss_activities(cx, pointer_event, target);
+        result
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#run-light-dismiss-activities>
+    ///
+    /// target is passed explicitly, because it might not be set on event
+    fn light_dismiss_activities(cx: &mut JSContext, event: &PointerEvent, target: &EventTarget) {
+        // TODO: Step 1. Run light dismiss open popovers with event.
+
+        // Step 2. Run light dismiss open dialogs with event.
+        HTMLDialogElement::light_dismiss_open_dialogs(cx, event, target);
     }
 }
 

@@ -39,6 +39,8 @@ use servo_base::id::{CookieStoreId, HistoryStateId, PipelineId};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
 
+use crate::response::RedirectTaint;
+
 /// Identifies a pending asynchronous cookie operation initiated by the embedder.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct CookieOperationId(pub u64);
@@ -839,7 +841,6 @@ pub enum CoreResourceMsg {
     /// Delete all session cookies (cookies without an expiry or max-age).
     DeleteSessionCookies(GenericSender<()>),
     DeleteCookie(ServoUrl, String),
-    DeleteCookieAsync(CookieStoreId, ServoUrl, String),
     NewCookieListener(
         CookieStoreId,
         GenericCallback<CookieAsyncResponse>,
@@ -1160,6 +1161,8 @@ pub struct Metadata {
     pub redirected: bool,
     /// Detailed TLS metadata associated with the response, if any.
     pub tls_security_info: Option<TlsSecurityInfo>,
+    /// Redirect taint of response
+    pub redirect_taint: RedirectTaint,
 }
 
 impl Metadata {
@@ -1177,6 +1180,7 @@ impl Metadata {
             timing: None,
             redirected: false,
             tls_security_info: None,
+            redirect_taint: Default::default(),
         }
     }
 
@@ -1249,17 +1253,22 @@ pub enum CookieSource {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CookieChange {
-    changed: Vec<Serde<Cookie<'static>>>,
-    deleted: Vec<Serde<Cookie<'static>>>,
+    pub cookie: Serde<Cookie<'static>>,
+    pub type_: CookieChangeType,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum CookieChangeType {
+    Changed,
+    Deleted,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum CookieData {
-    Change(CookieChange),
+    Change(Vec<CookieChange>),
     Get(Option<Serde<Cookie<'static>>>),
     GetAll(Vec<Serde<Cookie<'static>>>),
     Set(Result<(), ()>),
-    Delete(Result<(), ()>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

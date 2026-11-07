@@ -13,6 +13,10 @@ use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
 use style::selector_parser::PseudoElement;
 
+use crate::containing_block::{
+    ConstraintSpace, ContainingBlock, ContainingBlockSize, HasQuirkyBlockSize,
+    IndefiniteContainingBlock,
+};
 use crate::context::LayoutContext;
 use crate::dom::{LayoutBox, NodeExt, WeakLayoutBox};
 use crate::dom_traversal::{Contents, NodeAndStyleInfo, NonReplacedContents};
@@ -20,6 +24,7 @@ use crate::flexbox::FlexContainer;
 use crate::flow::BlockFormattingContext;
 use crate::flow::inline::InlineFormattingContext;
 use crate::fragment_tree::{BaseFragmentInfo, FragmentFlags};
+use crate::geom::LogicalVec2;
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
 use crate::positioned::{LayoutRootLayoutInputs, PositioningContext};
 use crate::replaced::ReplacedContents;
@@ -30,10 +35,7 @@ use crate::sizing::{
 use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
-use crate::{
-    ArcRefCell, ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock,
-    LogicalVec2, PropagatedBoxTreeData,
-};
+use crate::{ArcRefCell, PropagatedBoxTreeData};
 
 /// <https://drafts.csswg.org/css-display/#independent-formatting-context>
 #[derive(Debug, MallocSizeOf)]
@@ -467,6 +469,7 @@ impl IndependentFormattingContext {
                     size: ContainingBlockSize {
                         inline: containing_block_for_children.size.inline,
                         block: SizeConstraint::Definite(resolved_block_size),
+                        has_quirky_block_size: HasQuirkyBlockSize(false),
                     },
                     style: &self.base.style,
                 };
@@ -598,6 +601,7 @@ impl IndependentFormattingContext {
                 size: ContainingBlockSize {
                     inline: inline_size,
                     block: SizeConstraint::default(),
+                    has_quirky_block_size: HasQuirkyBlockSize(false),
                 },
                 style: self.style(),
             },

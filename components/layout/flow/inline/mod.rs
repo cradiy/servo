@@ -121,7 +121,9 @@ use unicode_bidi::{BidiInfo, Level};
 
 use super::float::{Clear, PlacementAmongFloats};
 use super::{IndependentFloatOrAtomicLayoutResult, IndependentFormattingContextLayoutResult};
+use crate::SharedStyle;
 use crate::cell::{ArcRefCell, WeakRefCell};
+use crate::containing_block::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock};
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
@@ -137,12 +139,11 @@ use crate::flow::{
 };
 use crate::formatting_contexts::{Baselines, IndependentFormattingContext};
 use crate::fragment_tree::{CollapsedMargin, Fragment, FragmentFlags, PositioningFragment};
-use crate::geom::{LogicalRect, LogicalSides1D, LogicalVec2, ToLogical};
+use crate::geom::{LogicalRect, LogicalSides1D, LogicalVec2};
 use crate::layout_box_base::LayoutBoxBase;
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext};
 use crate::sizing::{ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult};
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
-use crate::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, SharedStyle};
 
 // From gfxFontConstants.h in Firefox.
 static FONT_SUBSCRIPT_OFFSET_RATIO: f32 = 0.20;
@@ -1389,7 +1390,7 @@ impl InlineFormattingContextLayout<'_> {
         };
 
         let logical_origin_in_physical_coordinates =
-            start_corner.to_physical_vector(self.containing_block().style.writing_mode);
+            start_corner.to_physical_offset_deprecated(self.containing_block().style.writing_mode);
         self.positioning_context
             .adjust_static_position_of_hoisted_fragments_with_offset(
                 &logical_origin_in_physical_coordinates,
@@ -1404,7 +1405,7 @@ impl InlineFormattingContextLayout<'_> {
                 block: effective_block_advance.resolve(),
             },
         }
-        .as_physical(Some(containing_block));
+        .as_physical_deprecated(containing_block);
         self.fragments
             .push(Fragment::Positioning(PositioningFragment::new_anonymous(
                 self.root_nesting_level.style.clone(),
@@ -1562,10 +1563,10 @@ impl InlineFormattingContextLayout<'_> {
     ) {
         let containing_block = self.containing_block();
         let float_fragment = &float_item.fragment;
-        let logical_margin_rect_size = float_fragment
-            .margin_rect()
-            .size
-            .to_logical(containing_block.style.writing_mode);
+        let logical_margin_rect_size = LogicalVec2::from_physical_size(
+            &float_fragment.margin_rect().size,
+            containing_block.style.writing_mode,
+        );
         let inline_size = logical_margin_rect_size.inline.max(Au::zero());
 
         let available_inline_size = match self.current_line.placement_among_floats.get() {
@@ -2839,7 +2840,8 @@ impl IndependentFormattingContext {
             layout.process_soft_wrap_opportunity();
         }
 
-        let size = pbm_sums.sum() + fragment.base.rect().size.to_logical(container_writing_mode);
+        let size = pbm_sums.sum() +
+            LogicalVec2::from_physical_size(&fragment.base.rect().size, container_writing_mode);
         let baseline_offset = self
             .pick_baseline(&fragment.baselines(container_writing_mode))
             .map(|baseline| pbm_sums.block_start + baseline)

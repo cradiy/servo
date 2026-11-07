@@ -19,7 +19,7 @@ use net_traits::image_cache::{
     FontResolver, Image, ImageCache, ImageCacheFactory, ImageCacheResponseCallback,
     ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener, ImageMaskLayer, ImageMaskMode,
     ImageMaskTiling, ImageOrMetadataAvailable, ImageResponse, PendingImageId,
-    RasterizationCompleteResponse, VectorImage,
+    RasterizationCompleteResponse, RasterizationResult, VectorImage,
 };
 use net_traits::request::CorsSettings;
 use net_traits::{FetchResponseMsg, Metadata, NetworkError};
@@ -570,9 +570,9 @@ enum KeyCacheState {
 impl KeyCacheState {
     fn size(&self) -> usize {
         match self {
-            KeyCacheState::PendingBatch |
-            KeyCacheState::Processing |
-            KeyCacheState::PipelineClosed => 0,
+            KeyCacheState::PendingBatch
+            | KeyCacheState::Processing
+            | KeyCacheState::PipelineClosed => 0,
             KeyCacheState::Ready(items) => items.len(),
         }
     }
@@ -719,8 +719,9 @@ impl ImageCacheStore {
     /// If a key is available the image will be immediately loaded, otherwise it will load then the next batch of
     /// keys is received. Only call this if the image does not have a `LoadKey` yet.
     fn load_image_with_keycache(&mut self, pending_image: PendingKey) {
-        if let PendingKey::Svg((pending_id, ref _raster_image, requested_size)) = pending_image &&
-            self.key_cache
+        if let PendingKey::Svg((pending_id, ref _raster_image, requested_size)) = pending_image
+            && self
+                .key_cache
                 .evicted_images
                 .remove(&(pending_id, requested_size))
         {
@@ -879,9 +880,9 @@ impl ImageCacheStore {
     ) {
         if let Some(loaded_image) =
             self.completed_loads
-                .remove(&(url.clone(), origin.clone(), *cors_setting)) &&
-            let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response &&
-            let Some(id) = image.id
+                .remove(&(url.clone(), origin.clone(), *cors_setting))
+            && let ImageResponse::Loaded(Image::Raster(image), _) = loaded_image.image_response
+            && let Some(id) = image.id
         {
             self.remove_image_masks(id);
             self.paint_api.update_images(
@@ -892,7 +893,11 @@ impl ImageCacheStore {
     }
 
     fn remove_svg_image(&mut self, image_id: PendingImageId) {
-        if self.complete_svg_rasters.values().any(|(id, _)| *id == image_id) {
+        if self
+            .complete_svg_rasters
+            .values()
+            .any(|(id, _)| *id == image_id)
+        {
             return;
         }
         self.pending_loads.remove(&image_id);
@@ -923,7 +928,11 @@ impl ImageCacheStore {
                     self.remove_image_masks(image_id);
                     self.paint_api.update_images(
                         self.webview_id.into(),
-                        vec![ImageUpdate::DeleteImageAfterNextDisplayList(image_id, self.pipeline_id)].into(),
+                        vec![ImageUpdate::DeleteImageAfterNextDisplayList(
+                            image_id,
+                            self.pipeline_id,
+                        )]
+                        .into(),
                     );
                 }
             } else {
@@ -1233,11 +1242,11 @@ impl ImageCache for ImageCacheImpl {
         image_id: PendingImageId,
         requested_size: DeviceIntSize,
         svg_id: Option<Uuid>,
-    ) -> Option<RasterImage> {
+    ) -> RasterizationResult {
         let mut store = self.store.lock();
         let Some(vector_image) = store.vector_images.get(&image_id).cloned() else {
             warn!("Unknown image id {image_id:?} requested for rasterization");
-            return None;
+            return RasterizationResult::InvalidSvgParameters;
         };
 
         // This early return relies on the fact that the result of image rasterization cannot
@@ -1256,14 +1265,17 @@ impl ImageCache for ImageCacheImpl {
                     if old_id != image_id {
                         store.remove_svg_image(old_id);
                     } else if old_size != requested_size
-                        && !store.complete_svg_rasters.values().any(|entry| *entry == (old_id, old_size))
+                        && !store
+                            .complete_svg_rasters
+                            .values()
+                            .any(|entry| *entry == (old_id, old_size))
                     {
                         store.remove_rasterized_vector_image(&old_id, &old_size);
                     }
                 }
                 self.svg_id_image_id_map.lock().insert(svg_id, image_id);
             }
-            return Some(result);
+            return RasterizationResult::Image(result);
         }
 
         if let Some(svg_id) = svg_id
@@ -1278,14 +1290,12 @@ impl ImageCache for ImageCacheImpl {
             store.remove_svg_image(old_mapped_image_id);
         }
 
-        if store
-            .svg_rasterization_task_store
-            .is_or_set_being_rasterized(image_id, requested_size)
-        {
-            return None;
-        }
-
         let natural_size = vector_image.svg_tree.size().to_int_size();
+        let natural_tinyskia_size = {
+            let width = natural_size.width().min(MAX_SVG_PIXMAP_DIMENSION);
+            let height = natural_size.height().min(MAX_SVG_PIXMAP_DIMENSION);
+            tiny_skia::IntSize::from_wh(width, height)
+        };
         let tinyskia_requested_size = {
             let width = requested_size
                 .width
@@ -1297,19 +1307,26 @@ impl ImageCache for ImageCacheImpl {
                 .try_into()
                 .unwrap_or(0)
                 .min(MAX_SVG_PIXMAP_DIMENSION);
-            tiny_skia::IntSize::from_wh(width, height).unwrap_or(natural_size)
+            tiny_skia::IntSize::from_wh(width, height).or(natural_tinyskia_size)
+        };
+        let Some(tinyskia_requested_size) = tinyskia_requested_size else {
+            debug!(
+                "Asked for requested size {:?} which has zero size, and natural size {:?} has zero dimension. Not returning image",
+                requested_size, natural_size
+            );
+            return RasterizationResult::InvalidSvgParameters;
         };
 
-        // Requirements from tiny_skia::Pixmap::new
-        if tinyskia_requested_size.width() == 0 ||
-            tinyskia_requested_size.width() > (i32::MAX / 4).try_into().unwrap() ||
-            tinyskia_requested_size.height() == 0
+        if natural_tinyskia_size.is_none() {
+            debug!("SVG natural size has zero dimension. Not returning image");
+            return RasterizationResult::InvalidSvgParameters;
+        }
+
+        if store
+            .svg_rasterization_task_store
+            .is_or_set_being_rasterized(image_id, requested_size)
         {
-            debug!(
-                "Asked for requested size {:?} which has zero size. Not returning image",
-                requested_size
-            );
-            return None;
+            return RasterizationResult::PendingRasterization;
         }
 
         let store = self.store.clone();
@@ -1408,7 +1425,7 @@ impl ImageCache for ImageCacheImpl {
                 },
             }
         });
-        None
+        RasterizationResult::PendingRasterization
     }
 
     /// Add a new listener for the given pending image id. If the image is already present,
@@ -1454,8 +1471,8 @@ impl ImageCache for ImageCacheImpl {
     /// Inform the image cache about a response for a pending request.
     fn notify_pending_response(&self, id: PendingImageId, action: FetchResponseMsg) {
         match (action, id) {
-            (FetchResponseMsg::ProcessRequestBody(..), _) |
-            (FetchResponseMsg::ProcessCspViolations(..), _) => (),
+            (FetchResponseMsg::ProcessRequestBody(..), _)
+            | (FetchResponseMsg::ProcessCspViolations(..), _) => (),
             (FetchResponseMsg::ProcessResponse(_, response), _) => {
                 debug!("Received {:?} for {:?}", response.as_ref().map(|_| ()), id);
                 let mut store = self.store.lock();
@@ -1606,11 +1623,11 @@ impl ImageCache for ImageCacheImpl {
             .ok()?
             .checked_mul(usize::try_from(output_size.height).ok()?)?;
         let source_bytes = (frame.width as usize).checked_mul(frame.height as usize)?;
-        if output_bytes == 0 ||
-            output_bytes > MAX_MASK_BYTES ||
-            source_bytes > MAX_MASK_BYTES ||
-            store.image_mask_bytes.checked_add(output_bytes)? > MAX_MASK_CACHE_BYTES ||
-            store.image_masks.len() + store.composite_masks.len() >= 1024
+        if output_bytes == 0
+            || output_bytes > MAX_MASK_BYTES
+            || source_bytes > MAX_MASK_BYTES
+            || store.image_mask_bytes.checked_add(output_bytes)? > MAX_MASK_CACHE_BYTES
+            || store.image_masks.len() + store.composite_masks.len() >= 1024
         {
             return None;
         }
@@ -1697,9 +1714,9 @@ impl ImageCache for ImageCacheImpl {
             return Some(*key);
         }
         let length = (size.width as usize).checked_mul(size.height as usize)?;
-        if length > MAX_MASK_BYTES ||
-            store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES ||
-            store.image_masks.len() + store.composite_masks.len() >= 1024
+        if length > MAX_MASK_BYTES
+            || store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES
+            || store.image_masks.len() + store.composite_masks.len() >= 1024
         {
             return None;
         }
@@ -1727,8 +1744,8 @@ impl ImageCache for ImageCacheImpl {
                 .mask_pixels
                 .get(key)
                 .is_none_or(|current| !Arc::ptr_eq(&source.bytes, &current.bytes))
-        }) || store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES ||
-            store.image_masks.len() + store.composite_masks.len() >= 1024
+        }) || store.image_mask_bytes.checked_add(length)? > MAX_MASK_CACHE_BYTES
+            || store.image_masks.len() + store.composite_masks.len() >= 1024
         {
             return None;
         }

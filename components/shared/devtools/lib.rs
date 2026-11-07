@@ -168,7 +168,7 @@ pub struct ObjectPreview {
     pub entries: Option<Vec<(DebuggerValue, DebuggerValue)>>,
     pub own_properties: Option<Vec<PropertyDescriptor>>,
     pub own_properties_length: Option<u32>,
-    pub function: Option<FunctionPreview>,
+    pub function: Option<Box<FunctionPreview>>,
     pub array_length: Option<u32>,
     pub items: Option<Vec<DebuggerValue>>,
 }
@@ -465,6 +465,8 @@ pub enum DevtoolScriptControlMsg {
     GoForward(PipelineId),
     /// Direct the given pipeline to reload the current page.
     Reload(PipelineId),
+    /// Retrieve the favicon bytes for the given pipeline.
+    GetFavicon(PipelineId, GenericSender<Option<Vec<u8>>>),
     /// Gets the list of all allowed CSS rules and possible values.
     GetCssDatabase(GenericSender<HashMap<String, CssDatabaseProperty>>),
     /// Simulates a light or dark color scheme for the given pipeline

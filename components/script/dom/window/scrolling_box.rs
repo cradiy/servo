@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use app_units::Au;
 use euclid::{Rect, Vector2D};
-use js::context::{JSContext, NoGC};
+use js::context::JSContext;
 use layout_api::{AxesOverflow, ScrollContainerQueryFlags};
 use script_bindings::codegen::GenericBindings::WindowBinding::ScrollBehavior;
 use script_bindings::inheritance::Castable;
@@ -97,16 +97,16 @@ impl ScrollingBox {
         matches!(self.target, ScrollingBoxSource::Viewport(..))
     }
 
-    pub(crate) fn scroll_position(&self) -> LayoutVector2D {
+    pub(crate) fn scroll_position(&self, cx: &mut JSContext) -> LayoutVector2D {
         match &self.target {
             ScrollingBoxSource::Element(element) => element
                 .owner_window()
-                .scroll_offset_query(element.upcast::<Node>()),
-            ScrollingBoxSource::Viewport(document) => document.window().scroll_offset(),
+                .scroll_offset_query(cx, element.upcast::<Node>()),
+            ScrollingBoxSource::Viewport(document) => document.window().scroll_offset(cx),
         }
     }
 
-    pub(crate) fn content_size(&self) -> LayoutSize {
+    pub(crate) fn content_size(&self, cx: &mut JSContext) -> LayoutSize {
         if let Some(content_size) = self.cached_content_size.get() {
             return content_size;
         }
@@ -120,7 +120,7 @@ impl ScrollingBox {
 
         let content_size = document
             .window()
-            .scrolling_area_query(node_to_query)
+            .scrolling_area_query(cx, node_to_query)
             .size
             .to_f32()
             .cast_unit();
@@ -128,14 +128,14 @@ impl ScrollingBox {
         content_size
     }
 
-    pub(crate) fn size(&self, no_gc: &NoGC) -> LayoutSize {
+    pub(crate) fn size(&self, cx: &mut JSContext) -> LayoutSize {
         if let Some(size) = self.cached_size.get() {
             return size;
         }
 
         let size = match &self.target {
             ScrollingBoxSource::Element(element) => {
-                element.client_rect(no_gc).size.to_f32().cast_unit()
+                element.client_rect(cx).size.to_f32().cast_unit()
             },
             ScrollingBoxSource::Viewport(document) => {
                 document.window().viewport_details().size.cast_unit()
@@ -181,7 +181,11 @@ impl ScrollingBox {
         }
     }
 
-    pub(crate) fn can_keyboard_scroll_in_axis(&self, no_gc: &NoGC, axis: ScrollingBoxAxis) -> bool {
+    pub(crate) fn can_keyboard_scroll_in_axis(
+        &self,
+        cx: &mut JSContext,
+        axis: ScrollingBoxAxis,
+    ) -> bool {
         let overflow = match axis {
             ScrollingBoxAxis::X => self.overflow.x,
             ScrollingBoxAxis::Y => self.overflow.y,
@@ -190,8 +194,8 @@ impl ScrollingBox {
             return false;
         }
         match axis {
-            ScrollingBoxAxis::X => self.content_size().width > self.size(no_gc).width,
-            ScrollingBoxAxis::Y => self.content_size().height > self.size(no_gc).height,
+            ScrollingBoxAxis::X => self.content_size(cx).width > self.size(cx).width,
+            ScrollingBoxAxis::Y => self.content_size(cx).height > self.size(cx).height,
         }
     }
 
@@ -233,8 +237,8 @@ impl ScrollingBox {
             },
         };
 
-        let size = self.size(cx.no_gc());
-        let current_scroll_position = self.scroll_position();
+        let size = self.size(cx);
+        let current_scroll_position = self.scroll_position(cx);
         Vector2D::new(
             Self::calculate_scroll_position_one_axis(
                 inline,

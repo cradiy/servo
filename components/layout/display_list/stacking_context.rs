@@ -24,6 +24,7 @@ use style::computed_values::overflow_x::T as ComputedOverflow;
 use style::computed_values::position::T as ComputedPosition;
 use style::computed_values::text_decoration_style::T as TextDecorationStyle;
 use style::computed_values::text_decoration_thickness::T as TextDecorationThickness;
+use style::properties::ComputedValues;
 use style::values::computed::angle::Angle;
 use style::values::computed::{ClipRectOrAuto, Length, TextDecorationLine};
 use style::values::generics::box_::{OverflowClipMarginBox, Perspective};
@@ -161,12 +162,12 @@ impl StackingContextParentInfo {
             &TextDecorationLine::NONE => inherited_text_decorations,
             line => {
                 let mut new_vector = (*inherited_text_decorations).clone();
-                let color = style.get_color();
                 new_vector.push(FragmentTextDecoration {
                     line: *line,
-                    color: style.get_text_decoration_color().resolve_to_absolute(color),
+                    color: style.resolve_color(style.get_text_decoration_color()),
                     style: style.slow_clone_text_decoration_style(),
                     thickness: style.slow_clone_text_decoration_thickness(),
+                    underline_offset: resolve_underline_offset(style),
                 });
                 Rc::new(new_vector)
             },
@@ -399,7 +400,6 @@ impl StackingContextTree {
         fragment: &Fragment,
         point_in_viewport: PhysicalPoint<Au>,
     ) -> Option<Point2D<Au, CSSPixel>> {
-        let fragment = fragment.retrieve_box_fragment()?;
         let spatial_tree_node = fragment.spatial_tree_node()?;
         let transform = self
             .paint_info
@@ -411,6 +411,7 @@ impl StackingContextTree {
             .cast_unit();
 
         // Find the origin of the fragment relative to its reference frame in the same coordinate system.
+        let fragment = fragment.retrieve_box_fragment()?;
         let reference_frame_origin = self
             .paint_info
             .scroll_tree
@@ -435,6 +436,20 @@ pub(crate) struct FragmentTextDecoration {
     pub color: AbsoluteColor,
     pub style: TextDecorationStyle,
     pub thickness: TextDecorationThickness,
+    pub underline_offset: Au,
+}
+
+/// Resolve the `text-underline-offset` against the used font-size of the element
+///
+/// <https://drafts.csswg.org/css-text-decor-4/#underline-offset>:
+pub(crate) fn resolve_underline_offset(style: &ComputedValues) -> Au {
+    style
+        .get_text_underline_offset()
+        .map(|offset| {
+            let font_size = style.get_font().font_size.computed_size.0;
+            offset.resolve(font_size).into()
+        })
+        .auto_is(Au::zero)
 }
 
 #[derive(Clone, Copy, Debug, Eq, MallocSizeOf, PartialEq)]
@@ -1503,6 +1518,7 @@ impl BoxFragment {
                         box_fragment.clear_stacking_context_tree_traversal_data_recursively();
                     },
                     Fragment::Positioning(positioning_fragment) => {
+                        positioning_fragment.spatial_tree_node.clear();
                         clear_stacking_context_tree_traversal_data_on_fragments(
                             &positioning_fragment.children,
                         );
@@ -1512,7 +1528,7 @@ impl BoxFragment {
             }
         }
 
-        self.spatial_tree_node.set(None);
+        self.spatial_tree_node.clear();
         self.clear_stacking_context_tree_traversal_data();
         clear_stacking_context_tree_traversal_data_on_fragments(&self.children);
     }
@@ -1531,6 +1547,8 @@ impl PositioningFragment {
             .rect
             .translate(containing_block.accumulated_reference_frame_offset);
         self.set_cumulative_content_rect(&cumulative_containing_block);
+        self.spatial_tree_node
+            .set(Some(containing_block.scroll_node_id));
 
         let rect = self
             .base

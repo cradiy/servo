@@ -441,6 +441,7 @@ pub enum ConsoleLogLevel {
     Error,
     Trace,
     Dir,
+    Table,
 }
 
 impl From<ConsoleLogLevel> for log::Level {
@@ -453,6 +454,7 @@ impl From<ConsoleLogLevel> for log::Level {
             ConsoleLogLevel::Error => log::Level::Error,
             ConsoleLogLevel::Trace => log::Level::Trace,
             ConsoleLogLevel::Dir => log::Level::Info,
+            ConsoleLogLevel::Table => log::Level::Info,
         }
     }
 }
@@ -497,8 +499,9 @@ pub enum EmbedderMsg {
     SetClipboardText(WebViewId, String),
     /// Changes the cursor.
     SetCursor(WebViewId, Cursor),
-    /// A favicon was detected
-    NewFavicon(WebViewId, Image),
+    /// Inform the embedder that a new favicon was set for the current top-level frame. In the case
+    /// that there is no favicon, `None` is sent.
+    SetFavicon(WebViewId, Option<Image>),
     /// Get the device independent window rectangle.
     GetWindowRect(WebViewId, GenericSender<DeviceIndependentIntRect>),
     /// Get the device independent screen size and available size.
@@ -824,6 +827,9 @@ pub enum LoadStatus {
     /// `document.readyState` == `complete`.
     /// See <https://developer.mozilla.org/en-US/docs/Web/API/Document/readyState>
     Complete,
+    /// The current load was stopped, either by the embedder or by script on the page
+    /// (for instance, by calling `window.stop()`).
+    Stopped,
 }
 
 /// Data that could be used to display a desktop notification to the end user

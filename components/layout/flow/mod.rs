@@ -22,6 +22,10 @@ use style::values::specified::align::AlignFlags;
 use style::values::specified::{Display, TextAlignKeyword};
 
 use crate::cell::ArcRefCell;
+use crate::containing_block::{
+    ConstraintSpace, ContainingBlock, ContainingBlockSize, HasQuirkyBlockSize,
+    IndefiniteContainingBlock,
+};
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::flow::float::{Clear, FloatBox, FloatSide, PlacementAmongFloats, SequentialLayoutState};
@@ -33,7 +37,7 @@ use crate::fragment_tree::{
 };
 use crate::geom::{
     AuOrAuto, LogicalRect, LogicalSides, LogicalSides1D, LogicalVec2, PhysicalPoint, PhysicalRect,
-    PhysicalSides, ToLogical, ToLogicalWithContainingBlock,
+    PhysicalSides,
 };
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext, PositioningContextLength};
@@ -42,7 +46,6 @@ use crate::sizing::{
     SizeConstraint, Sizes,
 };
 use crate::style_ext::{AspectRatio, ContentBoxSizesAndPBM, LayoutStyle, PaddingBorderMargin};
-use crate::{ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock};
 
 mod construct;
 pub mod float;
@@ -263,17 +266,20 @@ impl BlockLevelBox {
             Au::zero(),
             block_stretch_size,
         );
+        let mut has_quirky_block_size = HasQuirkyBlockSize(false);
         if skippable_for_block_percentage_quirk(
             layout_context,
             &same_formatting_context_block.base,
             None,
         ) {
+            has_quirky_block_size.0 = !tentative_block_size.is_definite();
             tentative_block_size.replace_if_indefinite_with(containing_block.size.block);
         }
 
         let get_inline_content_sizes = || {
             let constraint_space = ConstraintSpace::new(
                 tentative_block_size,
+                has_quirky_block_size,
                 style,
                 None, /* TODO: support preferred aspect ratios on non-replaced boxes */
             );
@@ -293,6 +299,7 @@ impl BlockLevelBox {
             size: ContainingBlockSize {
                 inline: inline_size,
                 block: tentative_block_size,
+                has_quirky_block_size,
             },
             style,
         };
@@ -344,8 +351,13 @@ impl OutsideMarker {
     ) -> Fragment {
         let style = &self.context.base.style;
         let preferred_aspect_ratio = self.context.preferred_aspect_ratio(&LogicalVec2::zero());
-        let constraint_space =
-            ConstraintSpace::new(SizeConstraint::default(), style, preferred_aspect_ratio);
+        let has_quirky_block_size = HasQuirkyBlockSize(false);
+        let constraint_space = ConstraintSpace::new(
+            SizeConstraint::default(),
+            has_quirky_block_size,
+            style,
+            preferred_aspect_ratio,
+        );
         let content_sizes = self
             .context
             .inline_content_sizes(layout_context, &constraint_space);
@@ -353,6 +365,7 @@ impl OutsideMarker {
             size: ContainingBlockSize {
                 inline: content_sizes.sizes.max_content,
                 block: SizeConstraint::default(),
+                has_quirky_block_size,
             },
             style,
         };
@@ -370,12 +383,11 @@ impl OutsideMarker {
             .fragments
             .iter()
             .map(|fragment| {
-                fragment
-                    .base()
-                    .map(|base| base.rect())
-                    .unwrap_or_default()
-                    .to_logical(&containing_block_for_children)
-                    .max_inline_position()
+                LogicalRect::from_physical_deprecated(
+                    fragment.base().map(|base| base.rect()).unwrap_or_default(),
+                    &containing_block_for_children,
+                )
+                .max_inline_position()
             })
             .max()
             .unwrap_or_default();
@@ -412,7 +424,7 @@ impl OutsideMarker {
                 base_fragment_info,
                 style.clone(),
                 layout.fragments,
-                content_rect.as_physical(Some(containing_block)),
+                content_rect.as_physical_deprecated(containing_block),
                 PhysicalSides::zero(),
                 PhysicalSides::zero(),
                 PhysicalSides::zero(),
@@ -503,7 +515,7 @@ impl BlockFormattingContext {
                     block: content_block_size,
                 },
             }
-            .as_physical(Some(containing_block));
+            .as_physical_deprecated(containing_block);
             positioning_context.adjust_static_position_of_hoisted_fragments_with_offset(
                 &align_fragment_rect.origin.to_vector(),
                 previous_positioning_context_len,
@@ -1103,6 +1115,7 @@ impl IndependentFormattingContext {
             pbm,
             block_sizes,
             depends_on_block_constraints,
+            tentative_block_size: _,
             block_stretch_size,
             justify_self,
             preferred_aspect_ratio,
@@ -1172,7 +1185,7 @@ impl IndependentFormattingContext {
             base_fragment_info,
             self.base.style.clone(),
             layout.fragments,
-            content_rect.as_physical(Some(containing_block)),
+            content_rect.as_physical_deprecated(containing_block),
             pbm.padding.to_physical(containing_block_writing_mode),
             pbm.border.to_physical(containing_block_writing_mode),
             margin.to_physical(containing_block_writing_mode),
@@ -1250,6 +1263,7 @@ impl IndependentFormattingContext {
             min_block_size: Au,
             max_block_size: Option<Au>,
             tentative_block_size: SizeConstraint,
+            has_quirky_block_size: HasQuirkyBlockSize,
             depends_on_stretch_size: bool,
         }
         let mut cache = Cache {
@@ -1283,7 +1297,9 @@ impl IndependentFormattingContext {
             cache.max_block_size = max_block_size;
             cache.tentative_block_size =
                 SizeConstraint::new(preferred_block_size, min_block_size, max_block_size);
+            cache.has_quirky_block_size.0 = false;
             if skippable_for_block_percentage_quirk {
+                cache.has_quirky_block_size.0 = !cache.tentative_block_size.is_definite();
                 cache
                     .tentative_block_size
                     .replace_if_indefinite_with(containing_block.size.block);
@@ -1293,8 +1309,12 @@ impl IndependentFormattingContext {
 
         // With the tentative block size we can compute the inline min/max-content sizes.
         let get_inline_content_sizes = |cache: &Cache| {
-            let constraint_space =
-                ConstraintSpace::new(cache.tentative_block_size, style, preferred_aspect_ratio);
+            let constraint_space = ConstraintSpace::new(
+                cache.tentative_block_size,
+                cache.has_quirky_block_size,
+                style,
+                preferred_aspect_ratio,
+            );
             self.inline_content_sizes(layout_context, &constraint_space)
                 .sizes
         };
@@ -1353,6 +1373,7 @@ impl IndependentFormattingContext {
                         // for replaced elements, whose layout doesn't use the block size of the
                         // containing block for children.
                         block: cache.tentative_block_size,
+                        has_quirky_block_size: cache.has_quirky_block_size,
                     },
                     style,
                 },
@@ -1430,6 +1451,7 @@ impl IndependentFormattingContext {
                         size: ContainingBlockSize {
                             inline: proposed_inline_size,
                             block: cache.tentative_block_size,
+                            has_quirky_block_size: cache.has_quirky_block_size,
                         },
                         style,
                     },
@@ -1534,7 +1556,7 @@ impl IndependentFormattingContext {
             base_fragment_info,
             style.clone(),
             layout.fragments,
-            content_rect.as_physical(Some(containing_block)),
+            content_rect.as_physical_deprecated(containing_block),
             pbm.padding.to_physical(containing_block_writing_mode),
             pbm.border.to_physical(containing_block_writing_mode),
             margin.to_physical(containing_block_writing_mode),
@@ -1550,6 +1572,7 @@ struct ContainingBlockPaddingAndBorder<'a> {
     pbm: PaddingBorderMargin,
     block_sizes: Sizes,
     depends_on_block_constraints: bool,
+    tentative_block_size: SizeConstraint,
     block_stretch_size: Option<Au>,
     justify_self: AlignFlags,
     preferred_aspect_ratio: Option<AspectRatio>,
@@ -1601,6 +1624,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
             pbm: PaddingBorderMargin::zero(),
             block_sizes: Sizes::default(),
             depends_on_block_constraints: false,
+            tentative_block_size: SizeConstraint::default(),
             // The block stretch size may actually be definite, but it should be irrelevant
             // since the sizing properties are set to their initial value.
             block_stretch_size: None,
@@ -1635,7 +1659,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     let tentative_block_content_size = context.and_then(|context| {
         context.tentative_block_content_size(preferred_aspect_ratio, inline_stretch_size)
     });
-    let mut tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
+    let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
         SizeConstraint::Definite(content_box_sizes.block.resolve(
             LogicalAxis::Block,
             automatic_block_size,
@@ -1651,8 +1675,11 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
             block_stretch_size,
         )
     };
+    let mut block_size_for_children = tentative_block_size;
+    let mut has_quirky_block_size = HasQuirkyBlockSize(false);
     if skippable_for_block_percentage_quirk(layout_context, base, context) {
-        tentative_block_size.replace_if_indefinite_with(containing_block.size.block);
+        has_quirky_block_size.0 = !tentative_block_size.is_definite();
+        block_size_for_children.replace_if_indefinite_with(containing_block.size.block);
     }
 
     // https://drafts.csswg.org/css2/#the-width-property
@@ -1660,6 +1687,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     let get_inline_content_sizes = || {
         get_inline_content_sizes(&ConstraintSpace::new(
             tentative_block_size,
+            has_quirky_block_size,
             style,
             preferred_aspect_ratio,
         ))
@@ -1677,7 +1705,8 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     let containing_block_for_children = ContainingBlock {
         size: ContainingBlockSize {
             inline: inline_size,
-            block: tentative_block_size,
+            block: block_size_for_children,
+            has_quirky_block_size,
         },
         style,
     };
@@ -1687,6 +1716,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         pbm,
         block_sizes: content_box_sizes.block,
         depends_on_block_constraints,
+        tentative_block_size,
         block_stretch_size,
         justify_self,
         preferred_aspect_ratio,
@@ -2003,11 +2033,11 @@ impl<'container> PlacementState<'container> {
             return;
         }
 
-        let box_block_offset = box_fragment
-            .content_rect()
-            .origin
-            .to_logical(self.containing_block)
-            .block;
+        let box_block_offset = LogicalVec2::from_physical_point_deprecated(
+            &box_fragment.content_rect().origin,
+            self.containing_block,
+        )
+        .block;
         let box_fragment_baselines =
             box_fragment.baselines(self.containing_block.style.writing_mode);
         if let (None, Some(first)) = (self.inflow_baselines.first, box_fragment_baselines.first) {
@@ -2046,11 +2076,11 @@ impl<'container> PlacementState<'container> {
                 if is_outside_marker {
                     assert!(self.marker_block_size.is_none());
                     self.marker_block_size = Some(
-                        fragment
-                            .content_rect()
-                            .size
-                            .to_logical(self.containing_block.style.writing_mode)
-                            .block,
+                        LogicalVec2::from_physical_size(
+                            &fragment.content_rect().size,
+                            self.containing_block.style.writing_mode,
+                        )
+                        .block,
                     );
                     return;
                 }
@@ -2062,11 +2092,11 @@ impl<'container> PlacementState<'container> {
                     .block_level_layout_info
                     .clone()
                     .expect("A block-level fragment should have a BlockLevelLayoutInfo.");
-                let mut fragment_block_size = fragment
-                    .border_rect()
-                    .size
-                    .to_logical(self.containing_block.style.writing_mode)
-                    .block;
+                let mut fragment_block_size = LogicalVec2::from_physical_size(
+                    &fragment.border_rect().size,
+                    self.containing_block.style.writing_mode,
+                )
+                .block;
 
                 // We use `last_in_flow_margin_collapses_with_parent_end_margin` to implement
                 // this quote from https://drafts.csswg.org/css2/#collapsing-margins
@@ -2134,7 +2164,7 @@ impl<'container> PlacementState<'container> {
                     },
                     size: LogicalVec2::zero(),
                 }
-                .as_physical(Some(self.containing_block));
+                .as_physical_deprecated(self.containing_block);
             },
             Fragment::Float(box_fragment) => {
                 let sequential_layout_state = sequential_layout_state
@@ -2229,13 +2259,19 @@ impl IndependentFormattingContext {
                     .block
                     .resolve_extrinsic(automatic_block_size, Au::zero(), block_stretch_size)
             };
+        let mut has_quirky_block_size = HasQuirkyBlockSize(false);
         if skippable_for_block_percentage_quirk(layout_context, &self.base, Some(self)) {
+            has_quirky_block_size.0 = !tentative_block_size.is_definite();
             tentative_block_size.replace_if_indefinite_with(containing_block.size.block);
         }
 
         let get_content_size = || {
-            let constraint_space =
-                ConstraintSpace::new(tentative_block_size, style, preferred_aspect_ratio);
+            let constraint_space = ConstraintSpace::new(
+                tentative_block_size,
+                has_quirky_block_size,
+                style,
+                preferred_aspect_ratio,
+            );
             self.inline_content_sizes(layout_context, &constraint_space)
                 .sizes
         };
@@ -2253,6 +2289,7 @@ impl IndependentFormattingContext {
             size: ContainingBlockSize {
                 inline: inline_size,
                 block: tentative_block_size,
+                has_quirky_block_size,
             },
             style,
         };

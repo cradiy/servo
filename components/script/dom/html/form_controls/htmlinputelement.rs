@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{Cell, RefCell};
 use std::ptr;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderControlRequest, InputMethodRequest, RgbColor, SelectedFile};
 use encoding_rs::Encoding;
@@ -34,6 +35,7 @@ use xml5ever::ns;
 
 use crate::dom::MoveContext;
 use crate::dom::activation::Activatable;
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::FileListBinding::FileListMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
@@ -123,7 +125,7 @@ pub(crate) struct HTMLInputElement {
     /// groupo is checked, which is fully independent of the interminateness of the input element.
     indeterminateness: Cell<bool>,
     #[no_trace]
-    text_input: DomRefCell<TextInput<EmbedderClipboardProvider>>,
+    text_input: AtomicRefCell<TextInput<EmbedderClipboardProvider>>,
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
@@ -164,7 +166,7 @@ impl HTMLInputElement {
             .clone();
         HTMLInputElement {
             htmlelement: HTMLElement::new_inherited_with_state(
-                ElementState::ENABLED | ElementState::READWRITE,
+                ElementState::ENABLED | ElementState::READWRITE | ElementState::OPTIONAL_,
                 local_name,
                 prefix,
                 document,
@@ -178,7 +180,7 @@ impl HTMLInputElement {
             maxlength: Cell::new(DEFAULT_MAX_LENGTH),
             minlength: Cell::new(DEFAULT_MIN_LENGTH),
             size: Cell::new(DEFAULT_INPUT_SIZE),
-            text_input: DomRefCell::new(TextInput::new(
+            text_input: AtomicRefCell::new(TextInput::new(
                 Lines::Single,
                 DOMString::new(),
                 EmbedderClipboardProvider {
@@ -346,6 +348,48 @@ impl HTMLInputElement {
 
     fn does_multiple_apply(&self) -> bool {
         matches!(*self.input_type(), InputType::Email(_))
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#states-of-the-type-attribute>
+    fn does_required_apply(&self) -> bool {
+        matches!(
+            *self.input_type(),
+            InputType::Text(_) |
+                InputType::Search(_) |
+                InputType::Tel(_) |
+                InputType::Url(_) |
+                InputType::Email(_) |
+                InputType::Password(_) |
+                InputType::Date(_) |
+                InputType::Month(_) |
+                InputType::Week(_) |
+                InputType::Time(_) |
+                InputType::DatetimeLocal(_) |
+                InputType::Number(_) |
+                InputType::Checkbox(_) |
+                InputType::Radio(_) |
+                InputType::File(_)
+        )
+    }
+
+    fn update_required_and_optional_state(&self, no_gc: &NoGC) {
+        let element = self.upcast::<Element>();
+        let required_applies = self.does_required_apply();
+        let required = element.has_attribute(&local_name!("required"));
+
+        // https://html.spec.whatwg.org/multipage/#selector-required
+        // > The :required pseudo-class must match any element falling into one of the following categories:
+        // > - input elements that are required
+        element.set_state(no_gc, ElementState::REQUIRED, required_applies && required);
+
+        // https://html.spec.whatwg.org/multipage/#selector-optional
+        // > The :optional pseudo-class must match any element falling into one of the following categories:
+        // > - input elements to which the required attribute applies that are not required
+        element.set_state(
+            no_gc,
+            ElementState::OPTIONAL_,
+            required_applies && !required,
+        );
     }
 
     // valueAsNumber, step, min, and max all share the same set of
@@ -931,8 +975,7 @@ impl<'dom> LayoutDom<'dom, HTMLInputElement> {
         if !element.is_textual_or_password.get() {
             return None;
         }
-        #[expect(unsafe_code)]
-        let text_input = unsafe { element.text_input.borrow_for_layout() };
+        let text_input = element.text_input.borrow_mut();
         text_input.selection_for_layout
     }
 
@@ -975,11 +1018,11 @@ impl TextControlElement for HTMLInputElement {
         self.upcast()
     }
 
-    fn text_input(&self) -> Ref<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input(&self) -> AtomicRef<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow()
     }
 
-    fn text_input_mut(&self) -> RefMut<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input_mut(&self) -> AtomicRefMut<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow_mut()
     }
 
@@ -1860,6 +1903,33 @@ impl HTMLInputElement {
         );
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#selector-default>
+    pub(crate) fn update_default_state(&self, is_default_button: bool, no_gc: &NoGC) {
+        // > The :default pseudo-class must match any element falling into one of the following categories:
+        // > - Submit buttons that are default buttons of their form owner.
+        // > - input elements to which the checked attribute applies and that have a checked attribute
+        let is_default = self.is_submit_button() && is_default_button;
+        let checked_attribute = matches!(
+            *self.input_type(),
+            InputType::Checkbox(_) | InputType::Radio(_)
+        ) && self
+            .upcast::<Element>()
+            .has_attribute(&local_name!("checked"));
+        self.upcast::<Element>().set_state(
+            no_gc,
+            ElementState::DEFAULT,
+            is_default || checked_attribute,
+        );
+    }
+
+    /// This updates the default state via the form owner in order to determine if this is the default button.
+    fn update_default_state_indirectly(&self, no_gc: &NoGC) {
+        match self.form_owner() {
+            Some(form) => form.invalidate_default_button(no_gc),
+            None => self.update_default_state(false, no_gc),
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#selector-indeterminate>
     pub(crate) fn update_indeterminate_state(&self, no_gc: &NoGC) {
         // > The :indeterminate pseudo-class must match any element falling into one of the following categories:
@@ -2011,14 +2081,12 @@ impl HTMLInputElement {
         if self.upcast::<Element>().click_in_progress() {
             return;
         }
-        let submit_button = node
-            .traverse_preorder(ShadowIncluding::No)
-            .filter_map(DomRoot::downcast::<HTMLInputElement>)
-            .filter(|input| matches!(*input.input_type(), InputType::Submit(_)))
-            .find(|r| r.form_owner() == owner);
-        match submit_button {
+        match form.default_button() {
             Some(ref button) => {
-                if button.is_instance_activatable() {
+                if button
+                    .as_maybe_activatable()
+                    .is_some_and(|button| button.is_instance_activatable())
+                {
                     // spec does not actually say to set the not trusted flag,
                     // but we can get here from synthetic keydown events
                     button
@@ -2228,16 +2296,23 @@ impl VirtualMethods for HTMLInputElement {
                     element.set_read_write_state(cx.no_gc(), read_write);
                 }
             },
-            local_name!("checked") if !self.checked_changed.get() => {
-                let checked_state = match mutation {
-                    AttributeMutation::Set(None) => true,
-                    AttributeMutation::Set(Some(_)) => {
-                        // Input was already checked before.
-                        return;
-                    },
-                    AttributeMutation::Removed => false,
-                };
-                self.update_checkedness(cx, checked_state, false);
+            local_name!("checked") => {
+                if !self.checked_changed.get() {
+                    let checked_state = match mutation {
+                        AttributeMutation::Set(None) => true,
+                        AttributeMutation::Set(Some(_)) => {
+                            // Input was already checked before.
+                            return;
+                        },
+                        AttributeMutation::Removed => false,
+                    };
+                    self.update_checkedness(cx, checked_state, false);
+                }
+                self.update_default_state_indirectly(cx.no_gc());
+            },
+            local_name!("min") | local_name!("max") => {
+                self.validity_state(cx)
+                    .perform_validation_and_update(cx, ValidationFlags::all());
             },
             local_name!("size") => {
                 let size = mutation.new_value(attr).map(|value| value.as_uint());
@@ -2349,11 +2424,15 @@ impl VirtualMethods for HTMLInputElement {
                     .as_specific()
                     .update_placeholder_contents(cx, self);
 
+                self.validity_state(cx)
+                    .perform_validation_and_update(cx, ValidationFlags::all());
                 self.update_checked_state(cx.no_gc());
                 self.update_indeterminate_state(cx.no_gc());
+                self.update_default_state_indirectly(cx.no_gc());
                 if element.focus_state() {
                     element.set_focusring_state(cx.no_gc(), self.is_textual_or_password());
                 }
+                self.update_required_and_optional_state(cx.no_gc());
             },
             local_name!("value") if !self.value_dirty.get() => {
                 // This is only run when the `value` or `defaultValue` attribute is set. It
@@ -2421,6 +2500,9 @@ impl VirtualMethods for HTMLInputElement {
             },
             local_name!("form") => {
                 self.form_attribute_mutated(cx, mutation);
+            },
+            local_name!("required") => {
+                self.update_required_and_optional_state(cx.no_gc());
             },
             _ => {
                 self.input_type()
@@ -2540,12 +2622,13 @@ impl VirtualMethods for HTMLInputElement {
         elem.SetIndeterminate(cx, self.Indeterminate());
         elem.text_input
             .safe_borrow_mut(cx.no_gc())
-            .set_content(self.text_input.borrow().get_content());
-        self.value_changed(cx);
+            .clone_content_from(&self.text_input.borrow());
+        elem.value_changed(cx);
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
         match attr.local_name() {
+            &local_name!("type") => true,
             &local_name!("width") |
             &local_name!("height") |
             &local_name!("hspace") |
@@ -2578,6 +2661,11 @@ impl FormControl for HTMLInputElement {
 impl Validatable for HTMLInputElement {
     fn as_element(&self) -> &Element {
         self.upcast()
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#have-range-limitations>
+    fn has_range_limitations(&self) -> bool {
+        self.does_value_as_number_apply() && (self.minimum().is_some() || self.maximum().is_some())
     }
 
     fn validity_state(&self, cx: &mut JSContext) -> DomRoot<ValidityState> {
@@ -2718,7 +2806,9 @@ impl Activatable for HTMLInputElement {
     fn activation_behavior(&self, cx: &mut JSContext, event: &Event, target: &EventTarget) {
         // Step 1. If element is not mutable, and element's type attribute is
         // neither in the Checkbox nor in the Radio state, then return.
-        debug_assert!(self.is_instance_activatable());
+        if !self.is_instance_activatable() {
+            return;
+        }
 
         // Step 2. Run element's input activation behavior, if any, and do nothing otherwise.
         let input_activation_type = {

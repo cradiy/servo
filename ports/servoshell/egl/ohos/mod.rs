@@ -57,14 +57,15 @@
 mod resources;
 
 use std::cell::RefCell;
+use std::ffi::CStr;
 use std::mem::MaybeUninit;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{LazyLock, Mutex, Once, OnceLock, mpsc};
+use std::time::Duration;
 use std::{fs, thread};
 
 use euclid::{Point2D, Rect, Scale, Size2D};
@@ -95,11 +96,11 @@ use xcomponent_sys::{
     OH_NativeXComponent_GetKeyEventAction, OH_NativeXComponent_GetKeyEventCapsLockState,
     OH_NativeXComponent_GetKeyEventCode, OH_NativeXComponent_GetKeyEventModifierKeyStates,
     OH_NativeXComponent_GetKeyEventNumLockState, OH_NativeXComponent_GetKeyEventScrollLockState,
-    OH_NativeXComponent_GetTouchEvent, OH_NativeXComponent_GetXComponentOffset,
-    OH_NativeXComponent_GetXComponentSize, OH_NativeXComponent_KeyAction,
-    OH_NativeXComponent_KeyCode, OH_NativeXComponent_KeyEvent,
+    OH_NativeXComponent_GetTouchEvent, OH_NativeXComponent_GetXComponentId,
+    OH_NativeXComponent_GetXComponentOffset, OH_NativeXComponent_GetXComponentSize,
+    OH_NativeXComponent_KeyAction, OH_NativeXComponent_KeyCode, OH_NativeXComponent_KeyEvent,
     OH_NativeXComponent_RegisterCallback, OH_NativeXComponent_RegisterKeyEventCallback,
-    OH_NativeXComponent_TouchEvent, OH_NativeXComponent_TouchEventType,
+    OH_NativeXComponent_TouchEvent, OH_NativeXComponent_TouchEventType, OH_XCOMPONENT_ID_LEN_MAX,
 };
 
 use super::app::{App, AppInitOptions};
@@ -115,6 +116,9 @@ const UPDATE_URL_QUEUE_SIZE: usize = 1;
 /// embedder thread. Specifying 4 as a max queue size seems reasonable for now, and can
 /// be adjusted later.
 const PROMPT_QUEUE_SIZE: usize = 4;
+/// The prefix for the XComponent ID we assign in ArkTS.
+/// Keep in sync with ArkTS (Index.ets).
+const XCOMPONENT_ID_PREFIX: &str = "servo-window-";
 // Todo: Need to check if OnceLock is suitable, or if the TS function can be destroyed, e.g.
 // if the activity gets suspended.
 static SET_URL_BAR_CB: OnceLock<
@@ -126,7 +130,6 @@ static TERMINATE_CALLBACK: OnceLock<
 static PROMPT_TOAST: OnceLock<
     ThreadsafeFunction<String, (), String, napi_ohos::Status, false, false, PROMPT_QUEUE_SIZE>,
 > = OnceLock::new();
-static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
 
 static KEY_EVENT_CONVERTER: Mutex<KeyEventConverter> = Mutex::new(KeyEventConverter::new());
 
@@ -382,14 +385,19 @@ pub(super) enum ServoAction {
     ImeDeleteBackward(usize),
     ImeSendEnter,
     ImeDismiss,
-    Vsync,
+    Vsync(ServoShellWindowId),
     Resize {
+        window_id: ServoShellWindowId,
         width: i32,
         height: i32,
     },
-    FocusWindow(u32, Vec<u32>),
-    CreatePlatformWindow(XComponentWrapper, WindowWrapper),
-    RemovePlatformWindow(u32, Vec<u32>),
+    FocusWindow(ServoShellWindowId),
+    CreatePlatformWindow(ServoShellWindowId, XComponentWrapper, WindowWrapper),
+    CloseWindow(ServoShellWindowId),
+    /// The Surface backing the window `ServoShellWindowId` is about to be destroyed.
+    /// Servo must stop rendering to that surface, and reply to the sender once that
+    /// is finished.
+    SurfaceDestroyed(ServoShellWindowId, Sender<()>),
 }
 
 impl std::fmt::Debug for ServoAction {
@@ -419,23 +427,26 @@ impl std::fmt::Debug for ServoAction {
             },
             Self::ImeSendEnter => write!(f, "ImeSendEnter"),
             Self::ImeDismiss => write!(f, "ImeDismiss"),
-            Self::Vsync => write!(f, "Vsync"),
-            Self::Resize { width, height } => f
+            Self::Vsync(window_id) => f.debug_tuple("Vsync").field(window_id).finish(),
+            Self::Resize {
+                window_id,
+                width,
+                height,
+            } => f
                 .debug_struct("Resize")
+                .field("window_id", window_id)
                 .field("width", width)
                 .field("height", height)
                 .finish(),
-            Self::FocusWindow(arg0, arkts_ids) => f
-                .debug_tuple("FocusWindow")
-                .field(arg0)
-                .field(arkts_ids)
+            Self::FocusWindow(window_id) => f.debug_tuple("FocusWindow").field(window_id).finish(),
+            Self::CreatePlatformWindow(window_id, ..) => f
+                .debug_tuple("CreatePlatformWindow")
+                .field(window_id)
                 .finish(),
-            Self::CreatePlatformWindow(..) => f.debug_tuple("CreatePlatformWindow").finish(),
-            Self::RemovePlatformWindow(window, arkts_ids) => f
-                .debug_tuple("RemovePlatformWindow")
-                .field(window)
-                .field(arkts_ids)
-                .finish(),
+            Self::CloseWindow(window) => f.debug_tuple("CloseWindow").field(window).finish(),
+            Self::SurfaceDestroyed(window_id, _done_sender) => {
+                f.debug_tuple("SurfaceDestroyed").field(window_id).finish()
+            },
         }
     }
 }
@@ -454,7 +465,7 @@ impl ServoAction {
     // todo: consider making this take `self`, so we don't need to needlessly clone.
     fn do_action(&self, servo: &Rc<App>) {
         use ServoAction::*;
-        if !(matches!(self, ServoAction::Vsync) || matches!(self, ServoAction::WakeUp)) {
+        if !(matches!(self, ServoAction::Vsync(_)) || matches!(self, ServoAction::WakeUp)) {
             trace!("ACTION {:?}", self);
         }
         match self {
@@ -492,40 +503,36 @@ impl ServoAction {
             ImeDismiss => {
                 servo.ime_dismissed();
             },
-            Vsync => {
-                servo.notify_vsync();
+            Vsync(window_id) => {
+                servo.notify_vsync(*window_id);
             },
-            Resize { width, height } => {
-                servo.resize(Rect::new(Point2D::origin(), Size2D::new(*width, *height)))
-            },
-            FocusWindow(arkts_index, arkts_ids) => {
-                if let Some(window) = arkts_ids
-                    .get(*arkts_index as usize)
-                    .and_then(|value| servo.state.window(ServoShellWindowId::from(*value as u64)))
-                {
-                    servo.state.set_window_has_focus(window.clone(), true);
-                    if let Some(webview) = window.active_webview() {
-                        if let Some(url) = webview.url() {
-                            SET_URL_BAR_CB.get().map(|f| {
-                                f.call(url.to_string(), ThreadsafeFunctionCallMode::Blocking)
-                            });
-                        }
-                    }
-                } else {
-                    error!(
-                        "Could not find window to activate. Arkts_index {}, arkts_ids {:?}, window_ids {:?}",
-                        arkts_index,
-                        arkts_ids,
-                        servo
-                            .state
-                            .windows()
-                            .iter()
-                            .map(|window| window.id())
-                            .collect::<Vec<_>>(),
-                    );
+            Resize {
+                window_id,
+                width,
+                height,
+            } => {
+                if let Some(window) = servo.state.window(*window_id) {
+                    servo.resize_window(
+                        &window,
+                        Rect::new(Point2D::origin(), Size2D::new(*width, *height)),
+                    )
                 }
             },
-            CreatePlatformWindow(xcomponent, native_window) => {
+            FocusWindow(window_id) => {
+                let Some(window) = servo.state.window(*window_id) else {
+                    error!("Could not find window {window_id:?} to focus");
+                    return;
+                };
+                servo.state.set_window_has_focus(window.clone(), true);
+                if let Some(webview) = window.active_webview() {
+                    if let Some(url) = webview.url() {
+                        SET_URL_BAR_CB
+                            .get()
+                            .map(|f| f.call(url.to_string(), ThreadsafeFunctionCallMode::Blocking));
+                    }
+                }
+            },
+            CreatePlatformWindow(window_id, xcomponent, native_window) => {
                 let (window_handle, viewport_rect) =
                     get_raw_window_handle(xcomponent.0, native_window.0);
                 let display_handle = RawDisplayHandle::Ohos(OhosDisplayHandle::new());
@@ -543,40 +550,81 @@ impl ServoAction {
                     window_handle,
                     viewport_rect,
                     hidpi_factor,
-                    Some(ServoShellWindowId::from(
-                        NEXT_WINDOW_ID.load(std::sync::atomic::Ordering::SeqCst),
-                    )),
+                    *window_id,
                 );
             },
-            RemovePlatformWindow(arkts_index, arkts_ids) => {
-                if let Some(window_to_remove) = arkts_ids
-                    .get(*arkts_index as usize)
-                    .map(|id| ServoShellWindowId::from(*id as u64))
-                    .and_then(|window_id| servo.state.window(window_id))
-                {
-                    if let Some(window_to_focus) = servo.state.window(ServoShellWindowId::from(0)) {
-                        servo
-                            .state
-                            .set_window_has_focus(window_to_focus.clone(), true);
-                        window_to_remove.schedule_close();
-                    } else {
-                        error!("Window is already closed.");
-                    }
+            CloseWindow(window_id) => {
+                if let Some(window) = servo.state.window(*window_id) {
+                    window.schedule_close();
+                } else {
+                    warn!("Window is already closed.");
                 }
+                servo.spin_event_loop();
+            },
+            SurfaceDestroyed(window_id, done_sender) => {
+                if let Some(window) = servo.state.window(*window_id) {
+                    servo.pause_painting_in_window(&window);
+                }
+                let _ = done_sender.send(());
             },
         };
     }
+}
+
+/// Get the window ID ArkTS assigned by parsing the XComponent ID
+///
+/// In the ArkTS Index.ets, we assign each window a unique ID named
+/// `<XCOMPONENT_ID_PREFIX><window_id>`, with window_id being an
+/// integer that monotonically increases, with each newly created window.
+/// We use this to identify windows in ArkTS and in servoshell.
+///
+/// # Safety
+///
+/// xcomponent must point to a valid and live XComponent.
+unsafe fn get_xcomponent_window_id(
+    xcomponent: *mut OH_NativeXComponent,
+) -> Option<ServoShellWindowId> {
+    let mut buffer = [0u8; OH_XCOMPONENT_ID_LEN_MAX as usize + 1];
+    let mut size = buffer.len() as u64;
+    // SAFETY: The caller guarantees that `xcomponent` is valid.
+    // `buffer` holds `size` bytes and enough space for the maximum xcomponent length.
+    let result = unsafe {
+        OH_NativeXComponent_GetXComponentId(xcomponent, buffer.as_mut_ptr().cast(), &raw mut size)
+    };
+    if result != 0 {
+        error!("OH_NativeXComponent_GetXComponentId failed with {result}");
+        return None;
+    }
+    let id = CStr::from_bytes_until_nul(&buffer)
+        .ok()
+        .and_then(|id| id.to_str().ok());
+    let window_id = id
+        .and_then(|id| id.strip_prefix(XCOMPONENT_ID_PREFIX))
+        .and_then(|window_id| window_id.parse::<u64>().ok());
+    let Some(window_id) = window_id else {
+        error!("Failed to parse XComponent id {id:?}");
+        return None;
+    };
+    Some(window_id.into())
 }
 
 /// Ask the OHOS framework to invoke [`on_vsync_cb`] once on the next vsync.
 ///
 /// Calling this multiple times in the same vsync period will result in
 /// one callback execution.
-pub(crate) fn request_vsync_callback(native_vsync: &ohos_vsync::NativeVsync) {
+pub(crate) fn request_vsync_callback(
+    native_vsync: &ohos_vsync::NativeVsync,
+    window_id: ServoShellWindowId,
+) {
+    // Currently ohos window IDs are capped at u32::MAX anyway, since `napi-rs` doesn't support
+    // u64 in the function signature, so casting to `usize` won't cause any additional problems.
+    let raw_window_id = window_id.raw().try_into().expect("window_id too large");
+    // Pass the window ID via the `data` pointer parameter. This avoids a potential leak, if a
+    // window is destroyed while the callback was requested but not invoked yet, then data
+    // would be lost.
+    let data = std::ptr::without_provenance_mut(raw_window_id);
     // SAFETY: We don't pass any data, and `on_vsync_cb` is a function with static lifetime.
-    if let Err(e) =
-        unsafe { native_vsync.request_raw_callback(Some(on_vsync_cb), std::ptr::null_mut()) }
-    {
+    if let Err(e) = unsafe { native_vsync.request_raw_callback(Some(on_vsync_cb), data) } {
         warn!("Failed to request vsync callback: {e:?}");
     }
 }
@@ -584,11 +632,13 @@ pub(crate) fn request_vsync_callback(native_vsync: &ohos_vsync::NativeVsync) {
 /// Vsync callback. Runs on the OHOS framework's vsync helper thread
 unsafe extern "C" fn on_vsync_cb(
     timestamp: ::core::ffi::c_longlong,
-    _data: *mut ::core::ffi::c_void,
+    data: *mut ::core::ffi::c_void,
 ) {
     trace!("Vsync callback at time {timestamp}");
+    // See `request_vsync_callback()`. Cast `data` back to the Window ID.
+    let window_id = ServoShellWindowId::from(data.addr() as u64);
     // Let's not panic here, that's been a source of confusion.
-    if let Err(e) = call(ServoAction::Vsync) {
+    if let Err(e) = call(ServoAction::Vsync(window_id)) {
         error!("Failed to send Vsync event: {e:?} - Main thread died?");
     }
 }
@@ -616,7 +666,6 @@ fn main_thread(init_opts: InitOpts) {
 
 #[unsafe(no_mangle)]
 extern "C" fn on_surface_created_cb(xcomponent: *mut OH_NativeXComponent, window: *mut c_void) {
-    static FIRST_WINDOW: AtomicBool = AtomicBool::new(true);
     info!("on_surface_created_cb");
     #[cfg(feature = "tracing-hitrace")]
     let _ = hitrace::ScopedTrace::start_trace(&c"on_surface_created_cb");
@@ -624,24 +673,20 @@ extern "C" fn on_surface_created_cb(xcomponent: *mut OH_NativeXComponent, window
     let xc_wrapper = XComponentWrapper(xcomponent);
     let window_wrapper = WindowWrapper(window);
 
-    // TODO: This if will be removed once we add multi-window support in a follow-up PR.
-    // This function will always be invoked on the UI thread, so there is no concurrency.
-    if FIRST_WINDOW.load(Ordering::Relaxed) {
-        FIRST_WINDOW.store(false, Ordering::Relaxed);
-        // The servo event loop is initialized before the native window / xcomponent is created,
-        // so if this fails, servo has crashed and we don't have a way to recover.
-        call(ServoAction::CreatePlatformWindow(
-            xc_wrapper,
-            window_wrapper,
-        ))
-        .expect("Servo main thread channel not initialized");
-    } else {
-        call(ServoAction::CreatePlatformWindow(
-            xc_wrapper,
-            window_wrapper,
-        ))
-        .expect("Servo main thread channel not initialized");
-    }
+    // SAFETY: We assume the system calls us with a valid xcomponent.
+    let Some(window_id) = (unsafe { get_xcomponent_window_id(xcomponent) }) else {
+        log::error!("on_surface_created_cb failed to obtain window id");
+        return;
+    };
+
+    // The servo event loop is initialized before the native window / xcomponent is created,
+    // so if this fails, servo has crashed and we don't have a way to recover.
+    call(ServoAction::CreatePlatformWindow(
+        window_id,
+        xc_wrapper,
+        window_wrapper,
+    ))
+    .expect("Servo main thread channel not initialized");
     info!("Returning from on_surface_created_cb");
 }
 
@@ -705,10 +750,16 @@ extern "C" fn on_surface_changed_cb(
     native_window: *mut c_void,
 ) {
     debug!("on_surface_changed_cb: xc: {xcomponent:?}, window: {native_window:?}");
+    // SAFETY: We assume the system calls us with a valid xcomponent.
+    let Some(window_id) = (unsafe { get_xcomponent_window_id(xcomponent) }) else {
+        log::error!("on_surface_changed_cb failed to obtain window id");
+        return;
+    };
     // SAFETY: We just obtained these pointers from the callback, so we can assume them to be valid.
     if let Ok(size) = unsafe { get_xcomponent_size(xcomponent, native_window) } {
-        info!("on_surface_changed_cb: Resizing to {size:?}");
+        info!("on_surface_changed_cb: Resizing window {window_id:?} to {size:?}");
         call(ServoAction::Resize {
+            window_id,
             width: size.width,
             height: size.height,
         })
@@ -718,8 +769,30 @@ extern "C" fn on_surface_changed_cb(
     }
 }
 
-extern "C" fn on_surface_destroyed_cb(_component: *mut OH_NativeXComponent, _window: *mut c_void) {
-    error!("on_surface_destroyed_cb is currently not implemented");
+extern "C" fn on_surface_destroyed_cb(xcomponent: *mut OH_NativeXComponent, _window: *mut c_void) {
+    // SAFETY: The xcomponent / window is valid until this callback returns.
+    let Some(window_id) = (unsafe { get_xcomponent_window_id(xcomponent) }) else {
+        return;
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    if call(ServoAction::SurfaceDestroyed(window_id, sender)).is_err() {
+        return;
+    }
+    // We shouldn't block the UI-thread, but we do need to wait until servo doesn't use the surface
+    // anymore. The call itself should be fast, so if we exceed this timeout, then probably
+    // something is blocked and we return anyway.
+    match receiver.recv_timeout(Duration::from_millis(500)) {
+        Ok(()) => {},
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("on_surface_destroyed_cb main thread callback disconnected");
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            error!(
+                "Timeout waiting for confirmation that Servo stopped using window {window_id:?}"
+            );
+        },
+    }
 }
 
 extern "C" fn on_dispatch_touch_event_cb(component: *mut OH_NativeXComponent, window: *mut c_void) {
@@ -1029,19 +1102,18 @@ pub fn init_servo(init_opts: InitOpts) -> napi_ohos::Result<()> {
 }
 
 #[napi]
-fn focus_webview(index: u32, arkts_ids: Vec<u32>) {
-    debug!("Focusing webview {index} from napi");
-    call(ServoAction::FocusWindow(index, arkts_ids)).expect("Could not focus webview");
+fn focus_window(window_id: u32) {
+    debug!("Focusing window {window_id} from napi");
+    call(ServoAction::FocusWindow(ServoShellWindowId::from(
+        window_id,
+    )))
+    .expect("Could not focus window");
 }
 
 #[napi]
-fn delete_webview(index: u32, arkts_ids: Vec<u32>) {
-    call(ServoAction::RemovePlatformWindow(index, arkts_ids)).expect("Could not delete webview");
-}
-
-#[napi]
-fn next_window_id(id: u32) {
-    NEXT_WINDOW_ID.store(id.into(), std::sync::atomic::Ordering::SeqCst);
+fn close_window(window_id: u32) {
+    let window_id = ServoShellWindowId::from(window_id);
+    call(ServoAction::CloseWindow(window_id)).expect("Could not close window");
 }
 
 struct OhosImeOptions {
@@ -1211,7 +1283,7 @@ impl HostTrait for HostCallbacks {
         // e.g. including webview id, perhaps URL and some additional investigation effort.
         // For now we just add a trace event here, so that we can see in the trace if we
         // successfully loaded **a** page.
-        if load_status == LoadStatus::Complete {
+        if matches!(load_status, LoadStatus::Complete | LoadStatus::Stopped) {
             #[cfg(feature = "tracing-hitrace")]
             let _scope = hitrace::ScopedTrace::start_trace(&c"PageLoadEndedPrompt");
         } else {

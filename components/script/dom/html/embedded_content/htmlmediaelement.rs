@@ -107,10 +107,11 @@ use crate::dom::videotracklist::VideoTrackList;
 use crate::dom::{RootedPromise, TracedPromise, referrer_policy_for_element};
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request_with_claim};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::MicrotaskRunnable;
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 /// A CSS file to style the media controls.
 static MEDIA_CONTROL_CSS: &str = include_str!("../../../resources/media-controls.css");
@@ -1314,7 +1315,10 @@ impl HTMLMediaElement {
         // Step 9.attribute.2. Let urlRecord be the result of encoding-parsing a URL given
         // the src attribute's value, relative to the media element's node document when the
         // src attribute was last changed.
-        let Ok(url_record) = base_url.join(src) else {
+        let Ok(url_record) = self
+            .owner_document()
+            .encoding_parse_a_url_with_base(src, &base_url)
+        else {
             self.queue_dedicated_media_source_failure_steps();
             return;
         };
@@ -1370,7 +1374,7 @@ impl HTMLMediaElement {
         // Step 9.children.4. Let urlRecord be the result of encoding-parsing a URL given
         // candidate's src attribute's value, relative to candidate's node document when the src
         // attribute was last changed.
-        let Ok(url_record) = source.owner_document().base_url().join(&src) else {
+        let Ok(url_record) = source.owner_document().encoding_parse_a_url(&src) else {
             // Step 9.children.5. If urlRecord is failure, then end the synchronous section,
             // and jump down to the failed with elements step below.
             self.load_from_source_child_failure_steps(cx, source);
@@ -1574,9 +1578,10 @@ impl HTMLMediaElement {
 
         let cors_setting = cors_setting_for_element(self.upcast());
         let global = self.global();
-        let request = create_a_potential_cors_request(
+        let url_with_blob_claim = ensure_blob_referenced_by_url_is_kept_alive(&global, url.clone());
+        let request = create_a_potential_cors_request_with_claim(
             Some(document.webview_id()),
-            url.clone(),
+            url_with_blob_claim,
             destination,
             cors_setting,
             None,

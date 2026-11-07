@@ -16,10 +16,11 @@ use style::values::computed::{
     LengthPercentage, MaxSize as StyleMaxSize, Percentage, Size as StyleSize,
 };
 
+use crate::containing_block::{ConstraintSpace, HasQuirkyBlockSize, IndefiniteContainingBlock};
 use crate::context::LayoutContext;
+use crate::geom::LogicalVec2;
 use crate::layout_box_base::LayoutBoxBase;
 use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, ContentBoxSizesAndPBM, LayoutStyle};
-use crate::{ConstraintSpace, IndefiniteContainingBlock, LogicalVec2};
 
 #[derive(PartialEq)]
 pub(crate) enum IntrinsicSizingMode {
@@ -185,10 +186,17 @@ pub(crate) fn outer_inline(
                         block_stretch_size,
                     )
                 };
+            let mut has_quirky_block_size = false;
             if skippable_for_block_percentage_quirk {
+                has_quirky_block_size = !block_size.is_definite();
                 block_size.replace_if_indefinite_with(containing_block.size.block.into())
             }
-            ConstraintSpace::new(block_size, style, aspect_ratio)
+            ConstraintSpace::new(
+                block_size,
+                HasQuirkyBlockSize(has_quirky_block_size),
+                style,
+                aspect_ratio,
+            )
         } else {
             // Even if the size doesn't directly depend on block constraints, since this box
             // doesn't establish a containing block, its contents can depend on its block
@@ -199,6 +207,7 @@ pub(crate) fn outer_inline(
             // We only get into here for anonymous blocks, for which the assumption holds.
             ConstraintSpace::new(
                 containing_block.size.block.into(),
+                containing_block.size.has_quirky_block_size,
                 containing_block.style,
                 None,
             )

@@ -20,8 +20,8 @@ interface CookieStore : EventTarget {
   Promise<undefined> delete(USVString name);
   Promise<undefined> delete(CookieStoreDeleteOptions options);
 
-  // [Exposed=Window]
-  // attribute EventHandler onchange;
+  [Exposed=Window]
+  attribute EventHandler onchange;
 };
 
 dictionary CookieStoreGetOptions {
@@ -43,6 +43,7 @@ dictionary CookieInit {
   USVString path = "/";
   CookieSameSite sameSite = "strict";
   boolean partitioned = false;
+  long long? maxAge = null;
 };
 
 dictionary CookieStoreDeleteOptions {

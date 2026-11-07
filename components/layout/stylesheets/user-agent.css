@@ -88,8 +88,10 @@ dialog::backdrop {
    https://searchfox.org/firefox-main/rev/efd2d1e6f77570ae6bc5294731a68101e45c81a3/layout/style/res/ua.css#379-384 */
 :-moz-inert { -moz-inert: inert; }
 select > button:first-child { -moz-inert: inert; }
-/* TODO: Uncomment once a :-moz-topmost-modal pseudo-class is supported. */
-/* :-moz-topmost-modal:not([inert]) { -moz-inert: none; } */
+:-moz-topmost-modal:not([inert]) {
+  -moz-inert: none;
+  user-select: text;
+}
 
 /* The UA stylesheet is not specified yet. These rules match what the WPT tests expect.
    https://drafts.csswg.org/css-ui-4/#inertness */
@@ -97,6 +99,7 @@ select > button:first-child { -moz-inert: inert; }
 dialog:modal { interactivity: auto; }
 :fullscreen { interactivity: auto; }
 
+/* https://html.spec.whatwg.org/multipage#phrasing-content-3 */
 cite, dfn, em, i, var { font-style: italic; }
 b, strong { font-weight: bolder; }
 code, kbd, samp, tt { font-family: monospace; }
@@ -124,16 +127,7 @@ a:link[rel~=help], a:visited[rel~=help],
 area:link[rel~=help], area:visited[rel~=help],
 link:link[rel~=help], link:visited[rel~=help] { cursor: help; }
 
-/*
- * FIXME: use `outline: auto;`
- */
-a:focus, area:focus {
-  outline: thin dotted;
-}
-
-input:focus, textarea:focus, button:focus {
-  outline: thin solid black;
-}
+:focus-visible { outline: auto; }
 
 mark { background: Mark; color: MarkText; }
 

@@ -898,30 +898,50 @@ pub(crate) async fn http_fetch(
 
     // Step 3. If request’s service-workers mode is "all", then
     if request.service_workers_mode == ServiceWorkersMode::All {
-        // TODO: Substep 1
-        // Set response to the result of invoking handle fetch for request.
-
-        // Substep 2
-        if let Some(ref res) = response {
-            // Subsubstep 1
-            // TODO: transmit body for request
-
-            // Subsubstep 2
-            // nothing to do, since actual_response is a function on response
-
-            // Subsubstep 3
-            if (res.response_type == ResponseType::Opaque && request.mode != RequestMode::NoCors) ||
-                (res.response_type == ResponseType::OpaqueRedirect &&
-                    request.redirect_mode != RedirectMode::Manual) ||
-                (res.url_list.len() > 1 && request.redirect_mode != RedirectMode::Follow) ||
-                res.is_network_error()
-            {
-                return Response::network_error(NetworkError::ConnectionFailure);
-            }
-
-            // Subsubstep 4
-            // TODO: set response's CSP list on actual_response
-        }
+        // Note: Most of these steps can't be implemented and don't make sense to
+        // implement until we have and implementation of "handle fetch" that is called
+        // below.
+        //
+        // Step 3.1. Let requestForServiceWorker be a clone of request.
+        // Step 3.2. If requestForServiceWorker’s body is non-null, then:
+        // Step 3.2.1. Let transformStream be a new TransformStream.
+        // Step 3.2.2. Let transformAlgorithm given chunk be these steps:
+        // Step 3.2.2.1. If fetchParams is canceled, then abort these steps.
+        // Step 3.2.2.2. If chunk is not a Uint8Array object, then terminate fetchParams’s
+        // controller.
+        // Step 3.2.2.3. Otherwise, enqueue chunk in transformStream. The user agent may
+        // split the chunk into implementation-defined practical sizes and enqueue each of
+        // them. The user agent also may concatenate the chunks into an
+        // implementation-defined practical size and enqueue it.
+        // Step 3.2.3. Set up transformStream with transformAlgorithm set to transformAlgorithm.
+        // Step 3.2.4. Set requestForServiceWorker’s body’s stream to the result of
+        // requestForServiceWorker’s body’s stream piped through transformStream.
+        // Step 3.3. Let serviceWorkerStartTime be the coarsened shared current time given
+        // fetchParams’s cross-origin isolated capability.
+        // Step 3.4. Let fetchResponse be the result of invoking handle fetch for
+        // requestForServiceWorker, with fetchParams’s controller and fetchParams’s
+        // cross-origin isolated capability. [HTML] [SW]
+        // Step 3.5. If fetchResponse is a response:
+        // Step 3.5.1. Set response to fetchResponse.
+        // Step 3.5.2. Set fetchParams’s timing info’s final service worker start time
+        // to serviceWorkerStartTime.
+        // Step 3.5.3. Set fetchParams’s timing info’s service worker timing info to
+        // response’s service worker timing info.
+        // Step 3.5.4. If request’s body is non-null, then cancel request’s body with undefined.
+        // Step 3.5.5. Set internalResponse to response, if response is not a filtered
+        // response; otherwise to response’s internal response.
+        // Step 3.5.6. Run the WebDriver BiDi response started steps with request and
+        // response.
+        // Step 3.5.7. If one of the following is true
+        //  - response’s type is "error"
+        //  - request’s mode is "same-origin" and response’s type is "cors"
+        //  - request’s mode is not "no-cors" and response’s type is "opaque"
+        //  - request’s redirect mode is not "manual" and response’s type is "opaqueredirect"
+        //  - request’s redirect mode is not "follow" and response’s URL list has more than one item
+        // then return a network error.
+        // Step 3.6. Otherwise, if fetchResponse is a service worker timing info, then
+        // set fetchParams’s timing info’s service worker timing info to
+        // fetchResponse.
     }
 
     // Step 4. If response is null, then:
@@ -1257,22 +1277,18 @@ pub async fn http_redirect_fetch(
 
     // Step 9. If request’s mode is "cors", locationURL includes credentials,
     // and request’s origin is not same origin with locationURL’s origin, then return a network error.
-    let same_origin = match request.origin {
-        Origin::Origin(ref origin) => *origin == location_url.origin(),
-        Origin::Client => panic!(
-            "Request origin should not be client for {}",
-            request.current_url()
-        ),
-    };
-
     let has_credentials = has_credentials(&location_url);
-
-    if request.mode == RequestMode::CorsMode && !same_origin && has_credentials {
-        return Response::network_error(NetworkError::CorsCredentials);
-    }
-
-    if cors_flag && location_url.origin() != request.current_url().origin() {
-        request.origin = Origin::Origin(ImmutableOrigin::new_opaque());
+    if request.mode == RequestMode::CorsMode {
+        let same_origin = match request.origin {
+            Origin::Origin(ref origin) => *origin == location_url.origin(),
+            Origin::Client => panic!(
+                "Request origin should not be client for {}",
+                request.current_url()
+            ),
+        };
+        if !same_origin && has_credentials {
+            return Response::network_error(NetworkError::CorsCredentials);
+        }
     }
 
     // Step 10. If request’s response tainting is "cors" and locationURL includes credentials, then return a network error.
@@ -3014,8 +3030,7 @@ fn set_the_sec_fetch_user_header(r: &mut Request) {
     debug_assert!(r.current_url().is_potentially_trustworthy());
 
     // Step 2. If r is not a navigation request, or if r’s user-activation is false, return.
-    // TODO user activation
-    if !r.is_navigation_request() {
+    if !r.is_navigation_request() || !r.user_activation {
         return;
     }
 
