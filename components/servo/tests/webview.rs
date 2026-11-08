@@ -474,6 +474,65 @@ fn test_inline_size_containment_intrinsic_contributions() {
 }
 
 #[test]
+fn test_size_container_layout_isolation() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        builder.preferences(Preferences {
+            layout_css_container_queries_enabled: true,
+            ..Default::default()
+        })
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<!doctype html><body></body>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    evaluate_javascript(&servo_test, webview, r#"
+(() => {
+    const near = (actual, expected, label) => {
+        if (!Number.isFinite(actual) || Math.abs(actual - expected) > .05)
+            throw Error(`${label}: ${actual} != ${expected}`);
+    };
+    if (!CSS.supports('container-type', 'inline-size')) throw Error('container types disabled');
+    for (const display of ['block', 'inline-block', 'inline-flex', 'inline-grid']) {
+        const box = document.createElement('div');
+        box.style = `display:${display};width:max-content;padding:6px;border:3px solid;container-type:inline-size`;
+        const child = document.createElement('div');
+        child.style = 'width:144px;height:28px';
+        box.append(child); document.body.append(box);
+        near(box.getBoundingClientRect().width, 18, `${display} isolated width`);
+        near(box.getBoundingClientRect().height, 46, `${display} content height`);
+        box.style.containerType = 'normal';
+        near(box.getBoundingClientRect().width, 162, `${display} restored width`);
+        box.style.containerType = 'inline-size';
+        child.style.width = '216px'; child.style.height = '44px';
+        near(box.getBoundingClientRect().width, 18, `${display} mutated width`);
+        near(box.getBoundingClientRect().height, 62, `${display} mutated height`);
+        box.remove();
+    }
+    const host = document.createElement('div');
+    host.style = 'display:flow-root;width:240px';
+    const box = document.createElement('div');
+    box.innerHTML = '<div style="float:left;width:40px;height:37px"></div>';
+    host.append(box); document.body.append(host);
+    near(box.getBoundingClientRect().height, 0, 'normal excludes float');
+    box.style.containerType = 'inline-size';
+    near(box.getBoundingClientRect().height, 37, 'container includes float');
+    box.style.containerType = 'normal';
+    near(box.getBoundingClientRect().height, 0, 'normal restored float exclusion');
+    box.innerHTML = '<div style="height:23px;margin-top:19px"></div>';
+    near(box.getBoundingClientRect().height, 23, 'normal collapses margin');
+    box.style.containerType = 'inline-size';
+    near(box.getBoundingClientRect().height, 42, 'container contains margin');
+    box.style.containerType = 'normal';
+    near(box.getBoundingClientRect().height, 23, 'normal restores margin collapse');
+    host.remove();
+    return 'container intrinsic sizes and formatting-context mutations passed';
+})()
+"#).unwrap();
+}
+
+#[test]
 fn test_container_unit_viewport_fallback_on_resize() {
     let servo_test = ServoTest::new_with_builder(|builder| {
         builder.preferences(Preferences {

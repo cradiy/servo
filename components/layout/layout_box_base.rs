@@ -104,7 +104,8 @@ impl LayoutBoxBase {
         layout_box: &impl ComputeInlineContentSizes,
     ) -> InlineContentSizesResult {
         let box_style = self.style.get_box();
-        if box_style.get_contain().contains(Contain::INLINE_SIZE) &&
+        if (box_style.get_contain().contains(Contain::INLINE_SIZE) ||
+            box_style.container_type.is_size_container_type()) &&
             !self.base_fragment_info.is_anonymous()
         {
             let display = box_style.display;

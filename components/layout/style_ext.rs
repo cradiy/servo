@@ -748,6 +748,10 @@ impl ComputedValuesExt for ComputedValues {
             return true;
         }
 
+        if self.get_box().container_type.is_size_container_type() {
+            return true;
+        }
+
         if self.get_column().is_multicol() {
             return true;
         }
