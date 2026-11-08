@@ -16,6 +16,7 @@ use style::computed_values::position::T as Position;
 use style::logical_geometry::WritingMode;
 use style::properties::ComputedValues;
 use style::values::specified::align::AlignFlags;
+use style::values::specified::box_::{Contain, DisplayInside, DisplayOutside};
 use style_traits::CSSPixel;
 
 use crate::containing_block::{
@@ -26,7 +27,7 @@ use crate::dom::{LayoutBox, WeakLayoutBox};
 use crate::flow::CollapsibleWithParentStartMargin;
 use crate::formatting_contexts::Baselines;
 use crate::fragment_tree::{
-    BaseFragmentInfo, BoxFragment, CollapsedBlockMargins, Fragment, FragmentStatus,
+    BaseFragmentInfo, BoxFragment, CollapsedBlockMargins, Fragment, FragmentFlags, FragmentStatus,
     SpecificLayoutInfo,
 };
 use crate::geom::LogicalSides1D;
@@ -102,6 +103,28 @@ impl LayoutBoxBase {
         constraint_space: &ConstraintSpace,
         layout_box: &impl ComputeInlineContentSizes,
     ) -> InlineContentSizesResult {
+        let box_style = self.style.get_box();
+        if box_style.get_contain().contains(Contain::INLINE_SIZE) &&
+            !self.base_fragment_info.is_anonymous()
+        {
+            let display = box_style.display;
+            let is_non_atomic_inline = display.is_inline_flow() &&
+                !self
+                    .base_fragment_info
+                    .flags
+                    .contains(FragmentFlags::IS_REPLACED);
+            if display.inside() != DisplayInside::Table &&
+                display.outside() != DisplayOutside::InternalTable &&
+                !display.is_ruby_type() &&
+                !is_non_atomic_inline
+            {
+                return InlineContentSizesResult {
+                    sizes: Au(0).into(),
+                    depends_on_block_constraints: false,
+                };
+            }
+        }
+
         let mut cache = self.cached_inline_content_size.borrow_mut();
         if let Some(cached_inline_content_size) = cache.as_ref() {
             let (previous_cb_block_size, result) = **cached_inline_content_size;

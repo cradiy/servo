@@ -408,6 +408,72 @@ fn test_cursor_change() {
 }
 
 #[test]
+fn test_inline_size_containment_intrinsic_contributions() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        builder.preferences(Preferences {
+            layout_css_contain_enabled: true,
+            layout_css_writing_mode_enabled: true,
+            ..Default::default()
+        })
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<!doctype html><body></body>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    evaluate_javascript(&servo_test, webview, r#"
+            (() => {
+                const assertClose = (actual, expected, name) => {
+                    if (!Number.isFinite(actual) || Math.abs(actual - expected) > .05) {
+                        throw Error(`${name}: ${actual} != ${expected}`);
+                    }
+                };
+                if (!CSS.supports('contain', 'inline-size')) throw Error('containment disabled');
+                const results = [];
+                for (const display of ['inline-block', 'inline-flex', 'inline-grid', 'block']) {
+                    const box = document.createElement('div');
+                    box.style = `display:${display};width:max-content;contain:inline-size;padding:8px;border:4px solid`;
+                    const child = document.createElement('div');
+                    child.style = 'width:180px;height:32px';
+                    box.append(child); document.body.append(box);
+                    assertClose(box.getBoundingClientRect().width, 24, display + ' isolated width');
+                    assertClose(box.getBoundingClientRect().height, 56, display + ' content height');
+                    box.style.width = 'min-content';
+                    assertClose(box.getBoundingClientRect().width, 24, display + ' minimum content');
+                    box.style.contain = 'none';
+                    assertClose(box.getBoundingClientRect().width, 204, display + ' removal');
+                    box.style.contain = 'inline-size';
+                    child.style.width = '260px';
+                    assertClose(box.getBoundingClientRect().width, 24, display + ' restored');
+                    child.style.height = '48px';
+                    assertClose(box.getBoundingClientRect().height, 72, display + ' changed content height');
+                    box.style.minWidth = '80px';
+                    assertClose(box.getBoundingClientRect().width, 104, display + ' minimum');
+                    results.push(display); box.remove();
+                }
+                document.body.style.writingMode = 'vertical-rl';
+                const vertical = document.createElement('div');
+                vertical.style = 'display:inline-block;writing-mode:vertical-rl;inline-size:max-content;contain:inline-size;padding:8px;border:4px solid';
+                vertical.innerHTML = '<div style="width:32px;height:180px"></div>';
+                document.body.append(vertical);
+                assertClose(vertical.getBoundingClientRect().height, 24, 'vertical inline isolation');
+                assertClose(vertical.getBoundingClientRect().width, 56, 'vertical block content');
+                vertical.remove();
+                document.body.style.writingMode = 'horizontal-tb';
+                const table = document.createElement('table');
+                table.innerHTML = '<tbody><tr><td><div style="width:180px;height:32px"></div></td></tr></tbody>';
+                table.style = 'display:inline-table;contain:none'; document.body.append(table);
+                const width = table.getBoundingClientRect().width;
+                table.style.contain = 'inline-size';
+                assertClose(table.getBoundingClientRect().width, width, 'table exclusion');
+                table.remove();
+                return JSON.stringify(results);
+            })()
+            "#).unwrap();
+}
+
+#[test]
 fn test_container_unit_viewport_fallback_on_resize() {
     let servo_test = ServoTest::new_with_builder(|builder| {
         builder.preferences(Preferences {
