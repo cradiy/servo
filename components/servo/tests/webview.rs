@@ -408,6 +408,73 @@ fn test_cursor_change() {
 }
 
 #[test]
+fn test_container_unit_viewport_fallback_on_resize() {
+    let servo_test = ServoTest::new_with_builder(|builder| {
+        builder.preferences(Preferences {
+            layout_css_writing_mode_enabled: true,
+            ..Default::default()
+        })
+    });
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(Url::parse("data:text/html,<!doctype html><body></body>").unwrap())
+        .build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &webview, &delegate);
+    for (width, height) in [(800, 600), (1000, 700), (640, 480)] {
+        webview.resize(PhysicalSize::new(width, height));
+        wait_for_webview_scene_to_be_up_to_date(&servo_test, &webview);
+        evaluate_javascript(
+            &servo_test,
+            webview.clone(),
+            r#"
+            (() => {
+                const units = ['cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax'];
+                const w = innerWidth, h = innerHeight;
+                const expected = [w, h, w, h, Math.min(w, h), Math.max(w, h)];
+                const check = (actual, want, name) => {
+                    if (!Number.isFinite(actual) || Math.abs(actual - want) > .05) {
+                        throw Error(`${name}: ${actual} != ${want}`);
+                    }
+                };
+                for (let i = 0; i < units.length; i++) {
+                    if (!CSS.supports('width', '10' + units[i])) {
+                        throw Error('unsupported ' + units[i]);
+                    }
+                    const element = document.createElement('div');
+                    element.style.width = '10' + units[i];
+                    document.body.append(element);
+                    check(parseFloat(getComputedStyle(element).width), expected[i] / 10, units[i]);
+                    element.remove();
+                }
+                let text = document.getElementById('sample');
+                if (!text) {
+                    text = document.createElement('div');
+                    text.id = 'sample';
+                    text.style.font = 'clamp(10px, 2cqi, 30px)/1.25 monospace';
+                    text.textContent = 'MWil';
+                    document.body.append(text);
+                }
+                const style = getComputedStyle(text);
+                if (!style.fontFamily.includes('monospace')) {
+                    throw Error('font shorthand discarded: ' + style.fontFamily);
+                }
+                check(parseFloat(style.fontSize), Math.max(10, Math.min(w * .02, 30)), 'font size');
+                const vertical = document.createElement('div');
+                vertical.style = 'writing-mode:vertical-rl;width:10cqi;height:10cqb';
+                document.body.append(vertical);
+                check(parseFloat(getComputedStyle(vertical).width), h / 10, 'vertical inline');
+                check(parseFloat(getComputedStyle(vertical).height), w / 10, 'vertical block');
+                vertical.remove();
+                return JSON.stringify({width: w, height: h, font: style.font, units: units.length});
+            })()
+            "#,
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn test_iframe_input_method_device_geometry() {
     let servo_test = ServoTest::new();
     let delegate = Rc::new(WebViewDelegateImpl::default());

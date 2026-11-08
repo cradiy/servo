@@ -464,7 +464,7 @@ impl<'dom> style::dom::TElement for ServoDangerousStyleElement<'dom> {
     }
 
     fn query_container_size(&self, _display: &Display) -> Size2D<Option<app_units::Au>> {
-        todo!();
+        Size2D::new(None, None)
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
