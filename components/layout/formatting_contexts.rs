@@ -8,6 +8,7 @@ use layout_api::LayoutNode;
 use malloc_size_of_derive::MallocSizeOf;
 use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
 use servo_arc::Arc;
+use style::Zero;
 use style::context::SharedStyleContext;
 use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
@@ -32,7 +33,7 @@ use crate::sizing::{
     self, ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, LazySize,
     SizeConstraint,
 };
-use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
+use crate::style_ext::{AspectRatio, ComputedValuesExt, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
 use crate::{ArcRefCell, PropagatedBoxTreeData};
@@ -323,6 +324,18 @@ impl IndependentFormattingContext {
         Some(result?.0)
     }
 
+    fn has_size_container_containment(&self) -> bool {
+        self.style()
+            .get_box()
+            .container_type
+            .contains(style::values::specified::ContainerType::SIZE)
+            && !self.is_table()
+            && self.style().get_box().display.outside()
+                != style::values::specified::box_::DisplayOutside::InternalTable
+            && !self.style().get_box().display.is_ruby_type()
+            && !self.base.base_fragment_info.is_anonymous()
+    }
+
     /// Same as [`Self::tentative_block_content_size()`], but if there is a tentative intrinsic
     /// block size, it also includes a bool which will be true if the former depends on
     /// the provided `inline_stretch_size`.
@@ -331,6 +344,11 @@ impl IndependentFormattingContext {
         preferred_aspect_ratio: Option<AspectRatio>,
         inline_stretch_size: Option<Au>,
     ) -> Option<(ContentSizes, bool)> {
+        if self.has_size_container_containment() {
+            return preferred_aspect_ratio
+                .is_none()
+                .then_some((Au::zero().into(), false));
+        }
         // See <https://github.com/w3c/csswg-drafts/issues/12333> regarding the difference
         // in behavior for the replaced and non-replaced cases.
         match &self.contents {
@@ -525,6 +543,26 @@ impl IndependentFormattingContext {
         preferred_aspect_ratio: Option<AspectRatio>,
         lazy_block_size: &LazySize,
     ) -> (IndependentFormattingContextLayoutResult, bool) {
+        let contained_block;
+        let containing_block_for_children = if self.has_size_container_containment() {
+            contained_block = ContainingBlock {
+                size: ContainingBlockSize {
+                    block: SizeConstraint::Definite(lazy_block_size.resolve(|| {
+                        preferred_aspect_ratio.map_or_else(Au::zero, |ratio| {
+                            ratio.compute_dependent_size(
+                                LogicalAxis::Block,
+                                containing_block_for_children.size.inline,
+                            )
+                        })
+                    })),
+                    ..containing_block_for_children.size.clone()
+                },
+                style: containing_block_for_children.style,
+            };
+            &contained_block
+        } else {
+            containing_block_for_children
+        };
         let content_block_size_under_default_constraint = match self
             .base
             .cached_independent_formatting_context_layout_if_applicable(
@@ -588,6 +626,11 @@ impl IndependentFormattingContext {
         preferred_aspect_ratio: Option<AspectRatio>,
         lazy_block_size: &LazySize,
     ) -> Au {
+        if self.has_size_container_containment() {
+            return preferred_aspect_ratio.map_or_else(Au::zero, |ratio| {
+                ratio.compute_dependent_size(LogicalAxis::Block, inline_size)
+            });
+        }
         if let Some(content_block_size) = self
             .base
             .cached_content_block_size_under_default_constraint_if_applicable(inline_size)
@@ -630,6 +673,11 @@ impl IndependentFormattingContext {
         &self,
         padding_border_sums: &LogicalVec2<Au>,
     ) -> Option<AspectRatio> {
+        if self.has_size_container_containment() {
+            return self
+                .style()
+                .preferred_aspect_ratio(None, padding_border_sums);
+        }
         match &self.contents {
             IndependentFormattingContextContents::Replaced(replaced, _) => {
                 replaced.preferred_aspect_ratio(self.style(), padding_border_sums)

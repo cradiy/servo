@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Container queries on undisplayed pseudo-elements</title>
+<link rel="help" href="https://drafts.csswg.org/css-conditional-5/#container-queries">
+<link rel="help" href="https://drafts.csswg.org/cssom/#dom-window-getcomputedstyle">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #scope { container-type: inline-size; width: 180px; }
+  #hidden { display: none; }
+  #target::before, #target::marker, #target::backdrop { color: red; }
+  @container (width >= 150px) {
+    #target::before, #target::marker, #target::backdrop { color: green; }
+  }
+</style>
+<div id="scope"><div id="hidden"><div id="target"></div></div></div>
+<script>
+  for (const pseudo of ["::before", "::marker", "::backdrop"]) {
+    test(t => {
+      t.add_cleanup(() => {
+        scope.style.width = "";
+        hidden.style.display = "";
+      });
+      assert_equals(getComputedStyle(target, pseudo).color, "rgb(0, 128, 0)");
+      scope.style.width = "120px";
+      assert_equals(getComputedStyle(target, pseudo).color, "rgb(255, 0, 0)");
+      hidden.style.display = "block";
+      assert_equals(getComputedStyle(target, pseudo).color, "rgb(255, 0, 0)");
+      scope.style.width = "180px";
+      assert_equals(getComputedStyle(target, pseudo).color, "rgb(0, 128, 0)");
+    }, `${pseudo} resolves container styles while hidden and after becoming visible`);
+  }
+</script>

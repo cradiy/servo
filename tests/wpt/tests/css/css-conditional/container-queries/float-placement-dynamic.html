@@ -1,0 +1,36 @@
+<!doctype html>
+<title>Container queries resume float placement and restart after geometry changes</title>
+<link rel="help" href="https://drafts.csswg.org/css-conditional-5/#size-container">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #region { width: 360px; display: flow-root; }
+  #leading { float: right; width: 180px; height: 96px; }
+  #following { float: left; width: 240px; height: 64px; }
+  #query { container-type: inline-size; }
+  #content { height: 112px; }
+  @container (width < 150px) { #content { height: 16px; } }
+</style>
+<div id="region">
+  <div id="leading"></div><div id="following"></div>
+  <div id="query"><div id="content"></div></div>
+</div>
+<script>
+  function check(width, top, stage) {
+    assert_equals(query.offsetWidth, width, stage + ": container inline size");
+    assert_equals(query.getBoundingClientRect().top - region.getBoundingClientRect().top,
+                  top, "Container position beside floats");
+    assert_equals(content.offsetHeight, 16, "Descendant query uses placement width");
+  }
+  test(() => {
+    check(120, 96, "initial");
+    region.style.width = "320px";
+    check(140, 0, "narrow");
+    region.style.width = "360px";
+    check(120, 96, "restore width");
+    leading.style.display = "none";
+    check(120, 0, "hide float");
+    leading.style.display = "block";
+    check(120, 96, "show float");
+  }, "Float placement restarts after resize and sibling removal");
+</script>

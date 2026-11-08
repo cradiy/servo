@@ -490,6 +490,11 @@ pub(crate) struct Document {
     /// objects. This is shared with the owning [`ScriptThread`].
     #[no_trace]
     shared_style_locks: SharedRwLocks,
+    has_size_query_containers: std::sync::atomic::AtomicBool,
+    #[no_trace]
+    container_query_sizes: atomic_refcell::AtomicRefCell<
+        FxHashMap<usize, euclid::default::Size2D<Option<app_units::Au>>>,
+    >,
     /// List of stylesheets associated with nodes in this document. |None| if the list needs to be refreshed.
     #[custom_trace]
     stylesheets: DomRefCell<DocumentStylesheetSet<ServoStylesheetInDocument>>,
@@ -4125,6 +4130,18 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().quirks_mode.get()
     }
 
+    pub(crate) fn has_size_query_containers(self) -> &'dom std::sync::atomic::AtomicBool {
+        &self.unsafe_get().has_size_query_containers
+    }
+
+    pub(crate) fn container_query_sizes(
+        self,
+    ) -> &'dom atomic_refcell::AtomicRefCell<
+        FxHashMap<usize, euclid::default::Size2D<Option<app_units::Au>>>,
+    > {
+        &self.unsafe_get().container_query_sizes
+    }
+
     #[inline]
     pub(crate) fn shared_style_locks(self) -> &'dom SharedRwLocks {
         self.unsafe_get().shared_style_locks()
@@ -4340,6 +4357,8 @@ impl Document {
             ancestor_origins_list: Default::default(),
             internal_ancestor_origin_objects_list: Default::default(),
             appropriate_template_contents_owner_document: Default::default(),
+            has_size_query_containers: Default::default(),
+            container_query_sizes: Default::default(),
             pending_restyles: DomRefCell::new(FxHashMap::default()),
             needs_restyle: Cell::new(RestyleReason::DOMChanged),
             origin: DomRefCell::new(origin),
@@ -5386,6 +5405,11 @@ impl Document {
         self.timeline
             .upcast::<AnimationTimeline>()
             .current_time_in_seconds()
+    }
+
+    pub(crate) fn has_size_query_containers(&self) -> bool {
+        self.has_size_query_containers
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn animation_manager(&self) -> &AnimationManager {

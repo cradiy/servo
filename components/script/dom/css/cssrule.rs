@@ -10,6 +10,7 @@ use script_bindings::reflector::Reflector;
 use style::shared_lock::{SharedRwLock, SharedRwLockReadGuard};
 use style::stylesheets::{CssRule as StyleCssRule, CssRuleType};
 
+use super::csscontainerrule::CSSContainerRule;
 use super::cssfontfacerule::CSSFontFaceRule;
 use super::cssfontfeaturevaluesrule::CSSFontFeatureValuesRule;
 use super::cssimportrule::CSSImportRule;
@@ -70,6 +71,8 @@ impl CSSRule {
         } else if let Some(rule) = self.downcast::<CSSKeyframeRule>() {
             rule as &dyn SpecificCSSRule
         } else if let Some(rule) = self.downcast::<CSSImportRule>() {
+            rule as &dyn SpecificCSSRule
+        } else if let Some(rule) = self.downcast::<CSSContainerRule>() {
             rule as &dyn SpecificCSSRule
         } else if let Some(rule) = self.downcast::<CSSSupportsRule>() {
             rule as &dyn SpecificCSSRule
@@ -153,8 +156,14 @@ impl CSSRule {
                 s,
             )),
             StyleCssRule::Page(_) => unreachable!(),
-            StyleCssRule::Container(_) => unimplemented!(), // TODO
-            StyleCssRule::Document(_) => unimplemented!(),  // TODO
+            StyleCssRule::Container(s) => DomRoot::upcast(CSSContainerRule::new(
+                cx,
+                window,
+                parent_rule,
+                parent_stylesheet,
+                s,
+            )),
+            StyleCssRule::Document(_) => unimplemented!(), // TODO
             StyleCssRule::LayerBlock(s) => DomRoot::upcast(CSSLayerBlockRule::new(
                 cx,
                 window,
@@ -265,8 +274,12 @@ impl CSSRule {
                 }
             },
             StyleCssRule::Page(_) => unreachable!(),
-            StyleCssRule::Container(_) => unimplemented!(), // TODO
-            StyleCssRule::Document(_) => unimplemented!(),  // TODO
+            StyleCssRule::Container(s) => {
+                if let Some(rule) = self.downcast::<CSSContainerRule>() {
+                    rule.update_rule(s.clone(), guard);
+                }
+            },
+            StyleCssRule::Document(_) => unimplemented!(), // TODO
             StyleCssRule::LayerBlock(s) => {
                 if let Some(rule) = self.downcast::<CSSLayerBlockRule>() {
                     rule.update_rule(s.clone(), guard);

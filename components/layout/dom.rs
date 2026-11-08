@@ -408,6 +408,21 @@ impl GenericLayoutDataTrait for DOMLayoutData {
         self
     }
 
+    fn principal_content_box_size(&self) -> Option<euclid::default::Size2D<app_units::Au>> {
+        self.0
+            .borrow()
+            .with_fragments(|fragments| {
+                let fragment = fragments.first()?.retrieve_box_fragment()?;
+                if fragment.style().get_box().display.is_inline_flow()
+                    && !fragment.base.flags.contains(FragmentFlags::IS_REPLACED)
+                {
+                    return None;
+                }
+                Some(fragment.content_rect().size.to_untyped())
+            })
+            .flatten()
+    }
+
     fn set_text_run_selection(
         &self,
         new_range: Option<RangeAny<Utf32CodeUnits>>,

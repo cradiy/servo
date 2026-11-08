@@ -463,8 +463,22 @@ impl<'dom> style::dom::TElement for ServoDangerousStyleElement<'dom> {
         self.element.namespace()
     }
 
-    fn query_container_size(&self, _display: &Display) -> Size2D<Option<app_units::Au>> {
-        Size2D::new(None, None)
+    fn note_size_query_container(&self) {
+        self.as_node().owner_doc().note_size_query_container();
+    }
+
+    fn query_container_size(&self, display: &Display) -> Size2D<Option<app_units::Au>> {
+        if display.is_none()
+            || display.is_contents()
+            || display.inside() == DisplayInside::Table
+            || display.outside() == DisplayOutside::InternalTable
+            || display.is_ruby_type()
+        {
+            return Size2D::new(None, None);
+        }
+        self.as_node()
+            .owner_doc()
+            .container_query_size(self.as_node().opaque())
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {

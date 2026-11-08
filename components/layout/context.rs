@@ -2,8 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+use app_units::Au;
 
 use embedder_traits::UntrustedNodeAddress;
 use euclid::Size2D;
@@ -33,7 +35,27 @@ use webrender_api::units::{DeviceIntSize, DeviceSize};
 
 pub(crate) type CachedImageOrError = Result<CachedImage, ResolveImageError>;
 
+#[derive(Default)]
+pub(crate) struct ContainerQueryLayoutState {
+    pub sizes: Mutex<HashMap<OpaqueNode, euclid::default::Size2D<Option<Au>>>>,
+    pub placements: Mutex<HashMap<OpaqueNode, crate::flow::float::FloatPlacementCheckpoint>>,
+    pub pending: Mutex<HashSet<OpaqueNode>>,
+}
+
+impl ContainerQueryLayoutState {
+    pub(crate) fn suspend(
+        &self,
+        node: OpaqueNode,
+        placement: &crate::flow::float::PlacementAmongFloats<'_>,
+    ) {
+        self.placements.lock().insert(node, placement.checkpoint());
+        self.pending.lock().insert(node);
+    }
+}
+
 pub(crate) struct LayoutContext<'a> {
+    pub container_queries: &'a ContainerQueryLayoutState,
+
     /// Bits shared by the layout and style system.
     pub style_context: SharedStyleContext<'a>,
 

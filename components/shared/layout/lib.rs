@@ -90,6 +90,9 @@ use webrender_api::{ExternalScrollId, ImageKey};
 pub trait GenericLayoutDataTrait: Any + MallocSizeOfTrait + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
 
+    /// The untransformed content-box size of the principal layout fragment.
+    fn principal_content_box_size(&self) -> Option<euclid::default::Size2D<Au>>;
+
     /// Returns whether `new_range` was successfully set on an existing text run
     fn set_text_run_selection(
         &self,

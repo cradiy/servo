@@ -86,7 +86,7 @@ use webrender_api::ExternalScrollId;
 use webrender_api::units::{DevicePixel, LayoutVector2D};
 
 use crate::accessibility::{AccessibilityContext, AccessibilityDamageMap, AccessibilityTree};
-use crate::context::{CachedImageOrError, ImageResolver, LayoutContext};
+use crate::context::{CachedImageOrError, ContainerQueryLayoutState, ImageResolver, LayoutContext};
 use crate::display_list::{DisplayListBuilder, HitTest, PaintTimingHandler, StackingContextTree};
 use crate::dom::NodeExt;
 use crate::query::{
@@ -627,10 +627,11 @@ impl Layout for LayoutThread {
             for block in blocks {
                 let values = shared
                     .stylist
-                    .compute_for_declarations::<ServoDangerousStyleElement>(
+                    .compute_for_declarations_with_element::<ServoDangerousStyleElement>(
                         &shared.guards,
                         &base,
                         ServoArc::new(shared_lock.wrap(block.clone())),
+                        Some(dangerous),
                     );
                 let mut frame = AnimationValueMap::default();
                 for declaration in block.declarations() {
@@ -1221,14 +1222,147 @@ impl LayoutThread {
                 .map(|accessibility| std::mem::take(&mut accessibility.damage)),
         );
 
-        let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
+        let container_queries = ContainerQueryLayoutState::default();
+        let mut container_sizes = if pref!(layout_css_container_queries_enabled)
+            && document.has_size_query_containers()
+        {
+            Self::container_query_sizes(root_element)
+        } else {
+            Vec::new()
+        };
+        *container_queries.sizes.lock() = container_sizes
+            .iter()
+            .map(|(element, _)| {
+                let node = element.as_node().opaque();
+                (node, document.container_query_size(node))
+            })
+            .collect();
+        let (mut reflow_phases_run, mut iframe_sizes, mut changed_web_fonts) = self
             .restyle_and_build_trees(
                 &mut reflow_request,
                 document,
                 root_element,
                 &image_resolver,
                 accessibility_damage.as_mut(),
+                &container_queries,
+                false,
             );
+
+        if pref!(layout_css_container_queries_enabled)
+            && document.has_size_query_containers()
+            && reflow_request.restyle.is_some()
+        {
+            let mut visited = std::collections::HashSet::new();
+            loop {
+                let next_sizes = Self::container_query_sizes(root_element);
+
+                document.set_container_query_sizes(
+                    next_sizes
+                        .iter()
+                        .map(|(element, size)| (element.as_node().opaque().0, *size))
+                        .collect(),
+                );
+                let pending = std::mem::take(&mut *container_queries.pending.lock());
+                let old_sizes: FxHashMap<_, _> = container_sizes
+                    .iter()
+                    .map(|(element, size)| (element.as_node().opaque(), *size))
+                    .collect();
+                let mut changed: Vec<_> = next_sizes
+                    .iter()
+                    .filter(|(element, size)| {
+                        pending.contains(&element.as_node().opaque())
+                            || old_sizes.get(&element.as_node().opaque()) != Some(size)
+                    })
+                    .map(|(element, _)| *element)
+                    .collect();
+                if changed.is_empty() {
+                    break;
+                }
+                let state: Vec<_> = next_sizes
+                    .iter()
+                    .map(|(element, size)| (element.as_node().opaque(), size.width, size.height))
+                    .collect();
+                *container_queries.sizes.lock() = next_sizes
+                    .iter()
+                    .map(|(element, size)| (element.as_node().opaque(), *size))
+                    .collect();
+                {
+                    let changed_nodes: std::collections::HashSet<_> = changed
+                        .iter()
+                        .map(|element| element.as_node().opaque())
+                        .collect();
+                    let mut placements = container_queries.placements.lock();
+                    // Ancestor queries can change the height at earlier float candidates
+                    // even when the descendant's currently selected styles stay unchanged.
+                    for (element, _) in &next_sizes {
+                        let node = element.as_node().opaque();
+                        let mut ancestor = element.traversal_parent();
+                        while let Some(parent) = ancestor {
+                            if changed_nodes.contains(&parent.as_node().opaque()) {
+                                placements.remove(&node);
+                                if let Some(mut data) = element.mutate_data() {
+                                    data.damage.insert(
+                                        style::servo::restyle_damage::ServoRestyleDamage::RELAYOUT,
+                                    );
+                                }
+                                if !changed_nodes.contains(&node) {
+                                    changed.push(*element);
+                                }
+                                break;
+                            }
+                            ancestor = parent.traversal_parent();
+                        }
+                    }
+                }
+                let mut placement_ranges: Vec<_> = container_queries
+                    .placements
+                    .lock()
+                    .iter()
+                    .map(|(node, checkpoint)| (node.0, checkpoint.band_range()))
+                    .collect();
+                placement_ranges.sort_unstable_by_key(|entry| entry.0);
+                if !visited.insert((state, placement_ranges)) {
+                    warn!("Container query layout cycle detected");
+                    break;
+                }
+                container_sizes = next_sizes;
+                for element in changed {
+                    if let Some(mut data) = element.mutate_data() {
+                        data.hint.insert(RestyleHint::restyle_subtree());
+                        if pending.contains(&element.as_node().opaque()) {
+                            data.damage
+                                .insert(style::servo::restyle_damage::ServoRestyleDamage::RELAYOUT);
+                        }
+                    }
+                    let mut ancestor = element.traversal_parent();
+                    while let Some(parent) = ancestor {
+                        unsafe {
+                            parent.set_dirty_descendants();
+                        }
+                        ancestor = parent.traversal_parent();
+                    }
+                }
+                let (phases, sizes, mut fonts) = self.restyle_and_build_trees(
+                    &mut reflow_request,
+                    document,
+                    root_element,
+                    &image_resolver,
+                    accessibility_damage.as_mut(),
+                    &container_queries,
+                    true,
+                );
+                reflow_phases_run.insert(phases);
+                iframe_sizes.extend(sizes);
+                changed_web_fonts
+                    .added_font_faces
+                    .append(&mut fonts.added_font_faces);
+                changed_web_fonts
+                    .removed_font_faces
+                    .append(&mut fonts.removed_font_faces);
+                changed_web_fonts.cascade_index_of_any_rule_changed |=
+                    fonts.cascade_index_of_any_rule_changed;
+            }
+        }
 
         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
@@ -1361,6 +1495,65 @@ impl LayoutThread {
     }
 
     #[servo_tracing::instrument(skip_all)]
+    fn container_query_sizes<'dom>(
+        root: ServoLayoutElement<'dom>,
+    ) -> Vec<(
+        ServoDangerousStyleElement<'dom>,
+        euclid::default::Size2D<Option<Au>>,
+    )> {
+        let mut result = Vec::new();
+        let mut pending = vec![unsafe { root.dangerous_style_element() }];
+        while let Some(element) = pending.pop() {
+            let Some(data) = element.borrow_data() else {
+                continue;
+            };
+            let Some(style) = data.styles.primary.as_ref() else {
+                continue;
+            };
+            let box_style = style.get_box();
+            if box_style.display.is_none() {
+                continue;
+            }
+            if box_style.container_type.is_size_container_type() {
+                let display = box_style.display;
+                let measured = if display.is_contents()
+                    || display.inside() == style::values::specified::box_::DisplayInside::Table
+                    || display.outside()
+                        == style::values::specified::box_::DisplayOutside::InternalTable
+                    || display.is_ruby_type()
+                {
+                    None
+                } else {
+                    element
+                        .as_node()
+                        .layout_node()
+                        .layout_data()
+                        .and_then(|data| data.principal_content_box_size())
+                };
+                let mut size = measured.map_or(euclid::default::Size2D::new(None, None), |size| {
+                    euclid::default::Size2D::new(Some(size.width), Some(size.height))
+                });
+                if !box_style
+                    .container_type
+                    .contains(style::values::specified::ContainerType::SIZE)
+                {
+                    if style.writing_mode.is_vertical() {
+                        size.width = None;
+                    } else {
+                        size.height = None;
+                    }
+                }
+                result.push((element, size));
+            }
+            pending.extend(
+                element
+                    .traversal_children()
+                    .filter_map(|node| node.as_element()),
+            );
+        }
+        result
+    }
+
     fn restyle_and_build_trees<'dom>(
         &mut self,
         reflow_request: &mut ReflowRequest,
@@ -1368,6 +1561,8 @@ impl LayoutThread {
         root_element: ServoLayoutElement<'dom>,
         image_resolver: &Arc<ImageResolver>,
         mut accessibility_damage: Option<&mut AccessibilityDamageMap<'dom>>,
+        container_queries: &ContainerQueryLayoutState,
+        container_query_restyle: bool,
     ) -> (ReflowPhasesRun, IFrameSizes, WebFontSetDifference) {
         let mut snapshot_map = SnapshotMap::new();
         let _snapshot_setter = match reflow_request.restyle.as_mut() {
@@ -1417,12 +1612,13 @@ impl LayoutThread {
         }
 
         let layout_context = LayoutContext {
+            container_queries,
             style_context: self.build_shared_style_context(
                 guards,
                 &snapshot_map,
                 reflow_request.animation_timeline_value,
                 &reflow_request.animations,
-                match reflow_request.stylesheets_changed() {
+                match reflow_request.stylesheets_changed() || container_query_restyle {
                     true => TraversalFlags::ForCSSRuleChanges,
                     false => TraversalFlags::empty(),
                 },
@@ -1447,11 +1643,15 @@ impl LayoutThread {
         {
             let _span = profile_traits::trace_span!("Styling").entered();
 
-            let original_dirty_root = unsafe {
-                ServoLayoutNode::new(&restyle.dirty_root.unwrap())
-                    .as_element()
-                    .unwrap()
-                    .dangerous_style_element()
+            let original_dirty_root = if container_query_restyle {
+                dangerous_root_element
+            } else {
+                unsafe {
+                    ServoLayoutNode::new(&restyle.dirty_root.unwrap())
+                        .as_element()
+                        .unwrap()
+                        .dangerous_style_element()
+                }
             };
 
             recalc_style_traversal = RecalcStyle::new(&layout_context);

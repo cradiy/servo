@@ -65,6 +65,10 @@ pub fn set(preferences: Preferences) {
         preferences.layout_css_container_queries_enabled
     );
     stylo_static_prefs::set_pref!(
+        "layout.css.style-queries.enabled",
+        preferences.layout_css_container_queries_enabled
+    );
+    stylo_static_prefs::set_pref!(
         "layout.css.ellipse-corners.enabled",
         preferences.layout_css_ellipse_corners_enabled
     );

@@ -105,3 +105,40 @@ impl<'dom> ServoDangerousStyleDocument<'dom> {
             .flush_shadow_root_stylesheets_if_necessary(stylist, guard);
     }
 }
+
+impl ServoDangerousStyleDocument<'_> {
+    /// Whether size container styles have occurred in this document.
+    pub fn has_size_query_containers(&self) -> bool {
+        self.document
+            .has_size_query_containers()
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Records size container usage during parallel style traversal.
+    pub fn note_size_query_container(&self) {
+        self.document
+            .has_size_query_containers()
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the query dimensions published after layout for this element.
+    pub fn container_query_size(
+        &self,
+        node: style::dom::OpaqueNode,
+    ) -> euclid::default::Size2D<Option<app_units::Au>> {
+        self.document
+            .container_query_sizes()
+            .borrow()
+            .get(&node.0)
+            .copied()
+            .unwrap_or_else(|| euclid::default::Size2D::new(None, None))
+    }
+
+    /// Replaces the size-query snapshot without retaining removed or hidden containers.
+    pub fn set_container_query_sizes(
+        &self,
+        sizes: rustc_hash::FxHashMap<usize, euclid::default::Size2D<Option<app_units::Au>>>,
+    ) {
+        *self.document.container_query_sizes().borrow_mut() = sizes;
+    }
+}

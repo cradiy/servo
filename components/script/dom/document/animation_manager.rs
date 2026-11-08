@@ -66,6 +66,8 @@ pub(crate) struct AnimationManager {
 
     /// Whether or not we have animations that are running.
     has_running_animations: Cell<bool>,
+    resampling_script_animations: Cell<bool>,
+    script_sample_generation: Cell<u64>,
     script_animations: DomRefCell<Vec<Dom<crate::dom::animation::Animation>>>,
     script_animation_candidates: DomRefCell<Vec<WeakRef<crate::dom::animation::Animation>>>,
 
@@ -96,6 +98,8 @@ impl AnimationManager {
             sets: Default::default(),
             animating_images: Default::default(),
             has_running_animations: Cell::new(false),
+            resampling_script_animations: Cell::new(false),
+            script_sample_generation: Cell::new(0),
             script_animations: Default::default(),
             script_animation_candidates: Default::default(),
             rooted_animation_nodes: Default::default(),
@@ -195,6 +199,27 @@ impl AnimationManager {
         self.update_running_animations_presence(window, running);
     }
 
+    pub(crate) fn needs_container_animation_resampling(&self) -> bool {
+        !self.resampling_script_animations.get()
+            && self
+                .script_animation_roots()
+                .iter()
+                .any(|animation| animation.is_relevant())
+    }
+
+    pub(crate) fn resample_script_animations(&self, cx: &mut js::context::JSContext) -> bool {
+        if self.resampling_script_animations.replace(true) {
+            return false;
+        }
+        let generation = self.script_sample_generation.get();
+        let roots = self.script_animation_roots();
+        for animation in roots.iter().filter(|animation| animation.is_relevant()) {
+            animation.sample(cx);
+        }
+        self.resampling_script_animations.set(false);
+        self.script_sample_generation.get() != generation
+    }
+
     pub(crate) fn tick_script_animations(&self, cx: &mut js::context::JSContext, window: &Window) {
         let roots = self.script_animation_roots();
         for animation in &roots {
@@ -228,13 +253,18 @@ impl AnimationManager {
         self.rooted_animation_nodes
             .borrow_mut()
             .insert(NoTrace(node.to_opaque()), Dom::from_ref(node));
-        self.sets
+        let changed = self
+            .sets
             .sets
             .write()
             .entry(AnimationSetKey::new_for_non_pseudo(node.to_opaque()))
             .or_default()
             .set_web_animation_sample(order, values, needs_ticks);
-        node.dirty(cx.no_gc(), NodeDamage::Style);
+        if changed {
+            self.script_sample_generation
+                .set(self.script_sample_generation.get().wrapping_add(1));
+            node.dirty(cx.no_gc(), NodeDamage::Style);
+        }
     }
 
     pub(crate) fn remove_script_sample(

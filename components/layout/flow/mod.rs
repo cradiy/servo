@@ -1428,6 +1428,30 @@ impl IndependentFormattingContext {
                 &pbm,
             );
 
+            let query_node = if servo_config::pref!(layout_css_container_queries_enabled)
+                && style.get_box().container_type.is_size_container_type()
+                && style.writing_mode == containing_block_writing_mode
+                && !is_table
+            {
+                self.base
+                    .base_fragment_info
+                    .tag
+                    .filter(|tag| tag.pseudo_element_chain.primary.is_none())
+                    .map(|tag| tag.node)
+            } else {
+                None
+            };
+            if let Some(node) = query_node {
+                if let Some(checkpoint) = layout_context
+                    .container_queries
+                    .placements
+                    .lock()
+                    .get(&node)
+                {
+                    placement.resume(checkpoint);
+                }
+            }
+
             loop {
                 // First try to place the block using the minimum size as the object size.
                 placement_rect = placement.place();
@@ -1474,6 +1498,23 @@ impl IndependentFormattingContext {
                     block: lazy_block_size.resolve(|| layout.content_block_size),
                     inline: inline_size,
                 };
+
+                if let Some(node) = query_node {
+                    let sizes = layout_context.container_queries.sizes.lock();
+                    let previous = sizes.get(&node).and_then(|size| {
+                        if style.writing_mode.is_vertical() {
+                            size.height
+                        } else {
+                            size.width
+                        }
+                    });
+                    if previous != Some(content_size.inline) {
+                        // Descendant queries must see this candidate before its height can
+                        // decide whether placement advances to the next float band.
+                        layout_context.container_queries.suspend(node, &placement);
+                        break;
+                    }
+                }
 
                 // Now we know the block size of this attempted layout of a box with block
                 // size of auto. Try to fit it into our precalculated placement among the

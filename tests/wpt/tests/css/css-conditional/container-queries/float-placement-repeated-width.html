@@ -1,0 +1,24 @@
+<!doctype html>
+<title>Float placement can revisit a query width at a later block position</title>
+<link rel="help" href="https://drafts.csswg.org/css-contain-2/#containment-inline-size">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #region { width: 360px; display: flow-root; }
+  .end { float: right; width: 180px; height: 96px; }
+  .start { float: left; width: 240px; height: 64px; }
+  #query { container-type: inline-size; }
+  #content { height: 200px; }
+  @container (width < 150px) { #content { height: 100px; } }
+</style>
+<div id="region">
+  <div class="end"></div><div class="start"></div><div class="end"></div>
+  <div id="query"><div id="content"></div></div>
+</div>
+<script>
+  test(() => {
+    assert_equals(query.offsetWidth, 180);
+    assert_equals(query.getBoundingClientRect().top - region.getBoundingClientRect().top, 160);
+    assert_equals(content.offsetHeight, 200);
+  }, "Repeated inline sizes at different float bands are not layout cycles");
+</script>

@@ -19,7 +19,7 @@ use layout_api::{
     ScrollContainerResponse,
 };
 use paint_api::display_list::ScrollTree;
-use script::layout_dom::ServoLayoutNode;
+use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
 use servo_arc::Arc as ServoArc;
 use servo_base::text::Utf32CodeUnits;
 use servo_geometry::{FastLayoutTransform, au_rect_to_f32_rect, f32_rect_to_au_rect};
@@ -30,7 +30,7 @@ use style::computed_values::position::T as Position;
 use style::computed_values::visibility::T as Visibility;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapseValue;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext, ThreadLocalStyleContext};
-use style::dom::{NodeInfo, OpaqueNode};
+use style::dom::{NodeInfo, OpaqueNode, TElement};
 use style::properties::style_structs::Font;
 use style::properties::{
     ComputedValues, Importance, LonghandId, PropertyDeclarationBlock, PropertyDeclarationId,
@@ -228,16 +228,16 @@ pub fn process_resolved_style_request(
     // traversal, so in the common case, the element is styled.
     let layout_element = node.as_element().unwrap();
     let layout_element = match pseudo {
-        Some(pseudo_element_type) => {
-            match layout_element.with_pseudo(*pseudo_element_type) {
-                Some(layout_element) => layout_element,
-                None => {
-                    // The pseudo doesn't exist, return nothing.  Chrome seems to query
-                    // the element itself in this case, Firefox uses the resolved value.
-                    // https://www.w3.org/Bugs/Public/show_bug.cgi?id=29006
-                    return String::new();
-                },
-            }
+        Some(pseudo_element_type) => match layout_element.with_pseudo(*pseudo_element_type) {
+            Some(layout_element) => layout_element,
+            None => {
+                if pseudo_element_type.is_before_or_after() {
+                    return process_resolved_style_request_for_unstyled_node(
+                        context, node, pseudo, property,
+                    );
+                }
+                return String::new();
+            },
         },
         None => layout_element,
     };
@@ -504,6 +504,18 @@ fn resolve_grid_template(
     }
 }
 
+struct UndisplayedAncestorStyles<'dom>(
+    Vec<(ServoDangerousStyleElement<'dom>, style::data::ElementStyles)>,
+);
+
+impl Drop for UndisplayedAncestorStyles<'_> {
+    fn drop(&mut self) {
+        for (element, styles) in self.0.drain(..).rev() {
+            element.mutate_data().unwrap().styles = styles;
+        }
+    }
+}
+
 #[expect(unsafe_code)]
 pub fn process_resolved_style_request_for_unstyled_node(
     context: &SharedStyleContext,
@@ -511,11 +523,6 @@ pub fn process_resolved_style_request_for_unstyled_node(
     pseudo: &Option<PseudoElement>,
     property: &PropertyId,
 ) -> String {
-    // In a display: none subtree. No pseudo-element exists.
-    if pseudo.is_some() {
-        return String::new();
-    }
-
     let mut tlc = ThreadLocalStyleContext::new();
     let mut context = StyleContext {
         shared: context,
@@ -523,6 +530,26 @@ pub fn process_resolved_style_request_for_unstyled_node(
     };
 
     let element = node.as_element().unwrap();
+    let style_element = unsafe { element.dangerous_style_element() };
+    let mut missing_ancestors = Vec::new();
+    let mut ancestor = style_element.traversal_parent();
+    while let Some(element) = ancestor {
+        if element.borrow_data().is_some_and(|data| data.has_styles()) {
+            break;
+        }
+        missing_ancestors.push(element);
+        ancestor = element.traversal_parent();
+    }
+    // Container selection needs ancestor styles even when those ancestors have no boxes.
+    // Keep them available only for this query so subsequent layout still styles the subtree.
+    let mut ancestor_styles = UndisplayedAncestorStyles(Vec::new());
+    for ancestor in missing_ancestors.into_iter().rev() {
+        let styles = resolve_style(&mut context, ancestor, RuleInclusion::All, None, None);
+        let mut data = unsafe { ancestor.ensure_data() };
+        ancestor_styles
+            .0
+            .push((ancestor, std::mem::replace(&mut data.styles, styles)));
+    }
     let styles = resolve_style(
         &mut context,
         unsafe { element.dangerous_style_element() },
@@ -530,7 +557,26 @@ pub fn process_resolved_style_request_for_unstyled_node(
         pseudo.as_ref(),
         None,
     );
-    let style = styles.primary();
+    let style = match pseudo {
+        Some(pseudo) if pseudo.is_eager() => styles.pseudos.get(pseudo).cloned(),
+        Some(pseudo) if pseudo.is_lazy() => {
+            context.shared.stylist.lazily_compute_pseudo_element_style(
+                &context.shared.guards,
+                style_element,
+                pseudo,
+                RuleInclusion::All,
+                styles.primary(),
+                false,
+                None,
+            )
+        },
+        Some(_) => None,
+        None => Some(styles.primary().clone()),
+    };
+    let Some(style) = style else {
+        return String::new();
+    };
+    let style = &*style;
     let longhand_id = match *property {
         PropertyId::NonCustom(id) => match id.longhand_or_shorthand() {
             Ok(longhand_id) => longhand_id,

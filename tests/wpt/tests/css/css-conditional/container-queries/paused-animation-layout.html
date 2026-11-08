@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Paused container unit animations update geometry after container resizing</title>
+<link rel="help" href="https://drafts.csswg.org/css-conditional-5/#container-lengths">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<body>
+<script>
+test(t => {
+  const container = document.createElement('div');
+  container.style = 'container-type:inline-size;width:240px';
+  const target = document.createElement('div');
+  target.style = 'height:20px';
+  container.append(target);
+  document.body.append(container);
+  t.add_cleanup(() => container.remove());
+  const animation = target.animate(
+    [{width:'25cqw'}, {width:'75cqw'}], {duration:1000, fill:'both'});
+  t.add_cleanup(() => animation.cancel());
+  animation.pause();
+  animation.currentTime = 500;
+  assert_equals(target.offsetWidth, 120, 'initial layout');
+  container.style.width = '400px';
+  assert_equals(target.offsetWidth, 200, 'expanded container');
+  container.style.width = '180px';
+  assert_equals(target.offsetWidth, 90, 'contracted container');
+}, 'Geometry queries resolve paused animation values against the current container size');
+</script>

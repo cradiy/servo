@@ -780,7 +780,18 @@ impl ReplacedContents {
             LogicalAxis::Block,
             preferred_aspect_ratio,
             &|| SizeConstraint::Definite(inline_size),
-            &|| self.fallback_block_size(writing_mode),
+            &|| {
+                if base
+                    .style
+                    .get_box()
+                    .container_type
+                    .contains(style::values::specified::ContainerType::SIZE)
+                {
+                    Au::zero()
+                } else {
+                    self.fallback_block_size(writing_mode)
+                }
+            },
         );
         let size = LogicalVec2 {
             inline: inline_size,

@@ -1,0 +1,29 @@
+<!doctype html>
+<title>Size query containers suppress natural dimensions and retain explicit aspect ratios</title>
+<link rel="help" href="https://drafts.csswg.org/css-contain-2/#containment-size">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<script>
+for (const tag of ["canvas", "div"]) {
+  for (const display of ["block", "inline-block"]) {
+    test(t => {
+      const element = document.createElement(tag);
+      element.style.cssText = `container-type:size; display:${display}; width:240px`;
+      document.documentElement.append(element);
+      t.add_cleanup(() => element.remove());
+      assert_equals(element.offsetHeight, 0, "Natural block size is suppressed");
+      element.style.aspectRatio = "3 / 2";
+      assert_equals(element.offsetHeight, 160, "Explicit ratio transfers definite width");
+      element.style.width = "auto";
+      element.style.height = "80px";
+      if (tag === "canvas" || display === "inline-block") {
+        assert_equals(element.offsetWidth, 120, "Explicit ratio transfers definite height");
+      }
+      element.style.aspectRatio = "auto";
+      if (tag === "canvas" || display === "inline-block") {
+        assert_equals(element.offsetWidth, 0, "Natural inline size is suppressed");
+      }
+    }, `${tag}, ${display}: size containment and aspect ratio`);
+  }
+}
+</script>

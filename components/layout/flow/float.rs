@@ -97,6 +97,27 @@ pub(crate) struct PlacementAmongFloats<'a> {
     max_inline_end: Au,
 }
 
+/// A suspended placement search resumed after descendant container queries are evaluated.
+#[derive(Clone)]
+pub(crate) struct FloatPlacementCheckpoint {
+    bands: FloatBandTree,
+    current_bands: VecDeque<FloatBand>,
+    next_band: FloatBand,
+    object_size: LogicalVec2<Au>,
+    ceiling: Au,
+    min_inline_start: Au,
+    max_inline_end: Au,
+}
+
+impl FloatPlacementCheckpoint {
+    pub(crate) fn band_range(&self) -> (Option<Au>, Au) {
+        (
+            self.current_bands.front().map(|band| band.top),
+            self.next_band.top,
+        )
+    }
+}
+
 impl<'a> PlacementAmongFloats<'a> {
     pub(crate) fn new(
         float_context: &'a FloatContext,
@@ -126,6 +147,30 @@ impl<'a> PlacementAmongFloats<'a> {
             ceiling,
             min_inline_start,
             max_inline_end,
+        }
+    }
+
+    pub(crate) fn checkpoint(&self) -> FloatPlacementCheckpoint {
+        FloatPlacementCheckpoint {
+            bands: self.float_context.bands.clone(),
+            current_bands: self.current_bands.clone(),
+            next_band: self.next_band,
+            object_size: self.object_size,
+            ceiling: self.ceiling,
+            min_inline_start: self.min_inline_start,
+            max_inline_end: self.max_inline_end,
+        }
+    }
+
+    pub(crate) fn resume(&mut self, checkpoint: &FloatPlacementCheckpoint) {
+        if self.float_context.bands == checkpoint.bands
+            && self.object_size == checkpoint.object_size
+            && self.ceiling == checkpoint.ceiling
+            && self.min_inline_start == checkpoint.min_inline_start
+            && self.max_inline_end == checkpoint.max_inline_end
+        {
+            self.current_bands = checkpoint.current_bands.clone();
+            self.next_band = checkpoint.next_band;
         }
     }
 
@@ -630,17 +675,17 @@ impl FloatBand {
 ///
 /// See: <https://en.wikipedia.org/wiki/AA_tree>
 ///      <https://arxiv.org/pdf/1412.4882.pdf>
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FloatBandTree {
     pub root: FloatBandLink,
 }
 
 /// A single edge (or lack thereof) in the float band tree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FloatBandLink(pub Option<Arc<FloatBandNode>>);
 
 /// A single node in the float band tree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FloatBandNode {
     /// The actual band.
     pub band: FloatBand,

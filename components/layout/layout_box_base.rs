@@ -114,14 +114,27 @@ impl LayoutBoxBase {
                     .base_fragment_info
                     .flags
                     .contains(FragmentFlags::IS_REPLACED);
-            if display.inside() != DisplayInside::Table &&
-                display.outside() != DisplayOutside::InternalTable &&
-                !display.is_ruby_type() &&
-                !is_non_atomic_inline
+            if display.inside() != DisplayInside::Table
+                && display.outside() != DisplayOutside::InternalTable
+                && !display.is_ruby_type()
+                && !is_non_atomic_inline
             {
+                let contained_ratio = box_style
+                    .container_type
+                    .contains(style::values::specified::ContainerType::SIZE)
+                    .then_some(constraint_space.preferred_aspect_ratio)
+                    .flatten();
+                let size = contained_ratio
+                    .zip(constraint_space.block_size.to_definite())
+                    .map_or(Au(0), |(ratio, block_size)| {
+                        ratio.compute_dependent_size(
+                            style::logical_geometry::LogicalAxis::Inline,
+                            block_size,
+                        )
+                    });
                 return InlineContentSizesResult {
-                    sizes: Au(0).into(),
-                    depends_on_block_constraints: false,
+                    sizes: size.into(),
+                    depends_on_block_constraints: contained_ratio.is_some(),
                 };
             }
         }

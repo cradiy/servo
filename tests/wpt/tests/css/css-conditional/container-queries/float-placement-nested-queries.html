@@ -1,0 +1,34 @@
+<!doctype html>
+<title>Ancestor container queries invalidate descendant float placement searches</title>
+<link rel="help" href="https://drafts.csswg.org/css-conditional-5/#size-container">
+<script src="/resources/testharness.js"></script>
+<script src="/resources/testharnessreport.js"></script>
+<style>
+  #source { width: 300px; container-type: inline-size; }
+  #outer { width: 100cqw; container: outer / inline-size; }
+  #region { width: 360px; display: flow-root; }
+  #leading { float: right; width: 180px; height: 96px; }
+  #following { float: left; width: 240px; height: 64px; }
+  #query { container: inner / inline-size; }
+  #content { height: 112px; }
+  @container inner (width < 150px) { #content { height: 16px; } }
+  @container outer (width < 500px) { #content { height: 16px; } }
+</style>
+<div id="source"><div id="outer"><div id="region">
+  <div id="leading"></div><div id="following"></div>
+  <div id="query"><div id="content"></div></div>
+</div></div></div>
+<script>
+  function check(width, top, stage) {
+    assert_equals(query.offsetWidth, width, stage + ": container inline size");
+    assert_equals(query.getBoundingClientRect().top - region.getBoundingClientRect().top,
+                  top, "Container position beside floats");
+  }
+  test(() => {
+    check(180, 0, "initial");
+    source.style.width = "600px";
+    check(120, 96, "wide ancestor");
+    source.style.width = "300px";
+    check(180, 0, "restore ancestor");
+  }, "Ancestor queries can change which float placement fits");
+</script>

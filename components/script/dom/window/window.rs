@@ -2070,7 +2070,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // Step 3.1: Parse pseudoElt as a <pseudo-element-selector>, and let type be the result.
         // TODO(#43095): This is quite hacky and it would be better to have a parsing function that
         // is integrated with stylo `PseudoElement` itself. Comparing with stylo, we are now currently
-        // missing `::backdrop`, `::color-swatch`, and `::details-content`.
+        // missing `::color-swatch` and `::details-content`.
         let pseudo = pseudo.map(|mut s| {
             s.make_ascii_lowercase();
             s
@@ -2084,6 +2084,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
             },
             Some(ref pseudo) if pseudo == "::selection" => Some(PseudoElement::Selection),
             Some(ref pseudo) if pseudo == "::marker" => Some(PseudoElement::Marker),
+            Some(ref pseudo) if pseudo == "::backdrop" => Some(PseudoElement::Backdrop),
             Some(ref pseudo) if pseudo == "::placeholder" => Some(PseudoElement::Placeholder),
             Some(ref pseudo) if pseudo.starts_with(':') => {
                 // Step 3.2: If type is failure, or is a ::slotted() or ::part()
@@ -2755,6 +2756,35 @@ impl Window {
         reflow_goal: ReflowGoal,
     ) -> (ReflowPhasesRun, ReflowStatistics) {
         let document = self.Document();
+        let manager = document.animation_manager();
+        let mut phases = ReflowPhasesRun::empty();
+        if document.has_size_query_containers()
+            && !matches!(
+                reflow_goal,
+                ReflowGoal::LayoutQuery(QueryMsg::AnimationValuesQuery)
+            )
+            && manager.needs_container_animation_resampling()
+        {
+            loop {
+                let (pass, _) = self.reflow_once(cx, ReflowGoal::LayoutQuery(QueryMsg::StyleQuery));
+                phases |= pass;
+                if !pass.contains(ReflowPhasesRun::RanLayout)
+                    || !manager.resample_script_animations(cx)
+                {
+                    break;
+                }
+            }
+        }
+        let (final_phases, statistics) = self.reflow_once(cx, reflow_goal);
+        (phases | final_phases, statistics)
+    }
+
+    fn reflow_once(
+        &self,
+        cx: &mut JSContext,
+        reflow_goal: ReflowGoal,
+    ) -> (ReflowPhasesRun, ReflowStatistics) {
+        let document = self.Document();
 
         // Never reflow inactive Documents.
         if !document.is_fully_active() {
@@ -3313,8 +3343,12 @@ impl Window {
         pseudo: Option<PseudoElement>,
         property: PropertyId,
     ) -> DOMString {
-        self.layout_reflow_deprecated(QueryMsg::ResolvedStyleQuery(property.clone()));
-
+        #[expect(unsafe_code)]
+        let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
+        self.reflow(
+            &mut cx,
+            ReflowGoal::LayoutQuery(QueryMsg::ResolvedStyleQuery(property.clone())),
+        );
         let document = self.Document();
         let animations = document.animation_manager().sets();
         DOMString::from(self.layout.borrow().query_resolved_style(
